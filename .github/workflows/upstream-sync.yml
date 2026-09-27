@@ -1,0 +1,105 @@
+name: Sync upstream TCP Brutal
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/HyNetworks/tcp-brutal.git
+          git fetch --prune upstream master
+
+      - name: Detect new upstream commits
+        id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git merge-base --is-ancestor upstream/master HEAD; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            echo "Already contains upstream/master."
+            exit 0
+          fi
+          echo "needed=true" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse upstream/master)" >> "$GITHUB_OUTPUT"
+          echo "short=$(git rev-parse --short=12 upstream/master)" >> "$GITHUB_OUTPUT"
+
+      - name: Merge upstream on a sync branch
+        if: steps.detect.outputs.needed == 'true'
+        id: merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch="upstream-sync/${{ steps.detect.outputs.short }}"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          if ! git merge --no-ff --no-edit upstream/master; then
+            echo "::error::Upstream merge has conflicts. No branch or PR was pushed."
+            echo "Conflicting files:"
+            git diff --name-only --diff-filter=U | tee /tmp/upstream-conflicts.txt
+            git merge --abort || true
+            exit 1
+          fi
+          git push --set-upstream origin "$branch"
+
+      - name: Prepare pull request body
+        if: steps.detect.outputs.needed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "Automated merge of \`HyNetworks/tcp-brutal:master\` into this fork."
+            echo
+            echo "Upstream head: \`${{ steps.detect.outputs.sha }}\`"
+            echo
+            echo "### Upstream commits included"
+            echo
+            echo "\`\`\`text"
+            git log --oneline --no-merges HEAD^1..upstream/master | head -100
+            echo "\`\`\`"
+            echo
+            echo "### Safety"
+            echo
+            echo "- This PR is never auto-merged."
+            echo "- Existing PR CI validates formatting, Go tests, and shell syntax."
+            echo "- Kernel/eBPF behavior still requires human review and target-kernel testing."
+            echo "- A merge does not publish a release; releases still require offline signing."
+          } > /tmp/upstream-pr.md
+
+      - name: Create pull request
+        if: steps.detect.outputs.needed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch="${{ steps.merge.outputs.branch }}"
+          existing=$(gh pr list --head "$branch" --base main --state open --json number --jq ".[0].number // empty")
+          if [[ -n "$existing" ]]; then
+            echo "PR #$existing already exists."
+            exit 0
+          fi
+          gh pr create \
+            --base main \
+            --head "$branch" \
+            --title "Sync upstream TCP Brutal ${{ steps.detect.outputs.short }}" \
+            --body-file /tmp/upstream-pr.md
