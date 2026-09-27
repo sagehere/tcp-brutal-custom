@@ -1,284 +1,420 @@
-# <img src="logo.png" width="400">
+# TCP Brutal Custom
 
-> **TCP Brutal Custom 定制版。** 端口接管、面板、菜单和安装说明见 [CUSTOM.zh.md](CUSTOM.zh.md)。下文原有的目标 IP 规则说明来自 [HyNetworks/tcp-brutal](https://github.com/HyNetworks/tcp-brutal)。
+<p align="center">
+  <img src="logo.png" width="400" alt="TCP Brutal">
+</p>
 
-TCP Brutal 是 [Hysteria](https://hysteria.network/) 的 Brutal 拥塞控制算法在 TCP 上的实现，以 Linux 内核模块的形式提供。关于 Brutal 算法本身的详细说明，请参阅 [Hysteria 文档](https://hysteria.network/zh/docs/advanced/Full-Server-Config/#_6)。
+<p align="center">
+  按本机 TCP 服务端口透明接管 Brutal，提供共享速率连接组、Web 管理面板、历史统计、DKMS 安装和更新回滚能力。
+</p>
 
-作为 Hysteria 的官方子项目，TCP Brutal 会持续维护，并与 Hysteria 中的 Brutal 实现保持同步。
+<p align="center">
+  <a href="README.md">English</a> ·
+  <a href="CUSTOM.zh.md">详细使用说明</a> ·
+  <a href="https://github.com/HyNetworks/tcp-brutal">上游 TCP Brutal</a>
+</p>
 
-**English: [README.md](README.md)**
+> 本项目基于 [HyNetworks/tcp-brutal](https://github.com/HyNetworks/tcp-brutal) v2.0.1 修改，并继续遵循 GPL-3.0。上游提供 Brutal 拥塞控制算法、目标地址规则和 socket 参数接口；本项目在此基础上增加了**按本机 TCP 服务端口透明接管**、管理面板、历史统计和自动化部署能力。
 
-> **v2 新特性：** TCP Brutal 不再需要上层应用专门适配。只需为某个目标地址设置一次速率，任何程序、任何基于 TCP 的协议，所有连向该地址的连接都会自动使用 Brutal。不必哀求开发者支持，现在你就能用！
+## 这个项目解决什么问题
 
-https://github.com/user-attachments/assets/ba5f938b-265a-49a5-8b60-ce7efac0c6e2
+目标很直接：
 
-## 快速开始
+> 在 Debian / Ubuntu VPS 上运行普通 TCP 服务，不修改应用程序，也能按**本机服务端口**自动启用 Brutal。
 
-### 安装
+例如：
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/sagehere/tcp-brutal-custom/main/scripts/install.sh -o /tmp/tcp-brutal-custom-install.sh && sudo bash /tmp/tcp-brutal-custom-install.sh
-```
+\`\`\`bash
+sudo tcp-brutal-custom port add 443 100
+\`\`\`
 
-该脚本会通过 DKMS 安装内核模块，并将 `brutalctl` 工具安装到 `/usr/local/bin`。需要 Linux 5.10 或更高版本。
+之后，新建立到本机 TCP 443 端口的连接会自动切换为 Brutal。
 
-如果使用带 flakes 的 NixOS，可以在 `flake.nix` 中加入该模块，同时也会提供 `brutalctl`：
+这里的 \`100\` 表示该端口所有连接共同共享的 **100 Mbps 目标有效速率**。
 
-```nix
-{
-  inputs.tcp-brutal.url = "github:HyNetworks/tcp-brutal";
+这并不是每条连接各 100 Mbps：
 
-  outputs = { nixpkgs, tcp-brutal, ... }: {
-    nixosConfigurations.myHost = nixpkgs.lib.nixosSystem {
-      system = "x86_64-linux";
-      modules = [
-        # ... your configuration.nix ...
-        tcp-brutal.nixosModules.default
-        { boot.tcp-brutal.enable = true; }
-      ];
-    };
-  };
-}
-```
+- 只有一条活跃连接时，它可以使用整个连接组速率；
+- 多条活跃连接会动态共享同一个总速率；
+- 修改速率后，已经接管的连接会立即使用新值；
+- 新增或删除端口规则，只影响之后新建立的连接。
 
-### 为目标地址启用 Brutal
+同一端口上的 IPv4 与 IPv6 连接共享同一个连接组。
 
-在**发送数据的一端**执行下面的命令。例如，如果用户从你的服务器下载文件，就应该在服务器上运行：
+## 主要特性
 
-```bash
-# 所有发往 203.0.113.5 的连接总共使用 100 Mbps，
-# 无论这些连接来自哪个程序
-brutalctl add 203.0.113.5/32 100
-```
+- **按本地端口透明接管**：无需修改 Nginx、代理、SSH 或其他 TCP 应用。
+- **端口级共享速率**：同一端口的所有受管连接共享一个总目标速率，不会按连接数量倍增。
+- **eBPF SockOps 自动选择**：在被动连接建立时，根据本机端口自动切换到 \`brutal\` 拥塞控制。
+- **Web 管理面板**：管理端口、速率、CWND 增益、访问白名单、历史记录和更新。
+- **SSH / CLI 管理**：添加/删除端口、查看状态、修改面板、更新、卸载。
+- **历史统计**：记录发送、确认、重传流量及 RTT，使用 SQLite 保存。
+- **DKMS 安装**：内核模块跟随内核升级重新构建。
+- **更新与回滚**：先准备新版本，再在维护窗口切换模块；切换失败时尝试恢复旧版本。
+- **兼容上游能力**：保留原有目标 IP 规则和 socket 参数接口。
 
-这里设置的是发往该目标地址的**所有连接合计速率**，通常填写接收方网络实际下载带宽。
+## 系统要求
 
-如果当前只有一条活跃连接，它可以使用全部带宽；如果有多条连接，则会动态平衡共享。不需要上层应用提供额外支持：普通 Web 服务器、代理工具、rsync、SSH 等连接到该地址时都会自动生效。
+当前安装器支持：
 
-```bash
-brutalctl list                    # 查看规则，以及每条规则当前有多少连接
-brutalctl add 203.0.113.5/32 50   # 修改速率；已有连接会立即使用新速率
-brutalctl del 203.0.113.5/32
-brutalctl flush
-```
+- Debian 12 / 13
+- Ubuntu 22.04 / 24.04
+- amd64 / arm64
+- systemd
+- cgroup v2
+- root 权限
+- DKMS
+- 与当前内核匹配的内核头文件
 
-**连接只会在建立时匹配规则，因此应该先添加规则，再建立需要使用 Brutal 的连接。无需重启正在运行的程序，但程序已经建立好的连接不会应用新规则。已有规则后，如果对同一前缀再次执行 `add`，会实时修改整个连接组的速率；执行 `del` 后，新连接将不再匹配该规则，但已有连接仍会继续使用原来的速率，直到连接关闭。**
+本项目同时涉及 Linux 内核模块和 eBPF。**仅仅编译成功，不代表所有内核版本都一定能正确完成端口接管。** 在正式依赖之前，应在实际目标内核上验证。
 
-规则在重启后不会保留。如果需要持久化，请将相应的 `add` 命令加入启动脚本。
+## 一键安装
 
-### 检查是否正常工作
+\`\`\`bash
+curl -fsSL https://raw.githubusercontent.com/sagehere/tcp-brutal-custom/main/scripts/install.sh -o /tmp/tcp-brutal-custom-install.sh
+sudo bash /tmp/tcp-brutal-custom-install.sh
+\`\`\`
 
-可以从服务器下载文件并观察速率，也可以使用 [example](example) 中的测速程序。客户端会同时建立多条连接，并让它们作为一个连接组共享同一速率。
+安装器会：
 
-```bash
-# 服务端，在 TCP 1234 端口监听
-python server.py -p 1234
+1. 从 GitHub Release 下载程序和 DKMS 源码；
+2. 校验 SHA-256；
+3. 安装内核模块；
+4. 安装管理程序；
+5. 创建并启用对应 systemd 服务。
 
-# 客户端，连接 example.com:1234
-# 总下载速率设为 50 Mbps
-# 使用 4 条连接（-n），持续 10 秒（-t）
-python client.py -p 1234 example.com 50
-```
+首次安装完成后，会输出随机管理员密码。
 
-示例程序会直接与内核模块通信，因此即使没有配置规则也能工作。**如果已经为客户端地址配置了规则，则以规则中的速率为准。**
+默认文件位置：
 
-## 工作原理
+| 项目 | 路径 |
+| --- | --- |
+| 配置文件 | \`/etc/tcp-brutal-custom/config.json\` |
+| 历史数据库 | \`/var/lib/tcp-brutal-custom/history.db\` |
+| 管理 Unix Socket | \`/run/tcp-brutal-custom/manager.sock\` |
+| 端口规则 | \`/proc/net/tcp_brutal/ports\` |
+| 目标地址规则 | \`/proc/net/tcp_brutal/rules\` |
 
-**Brutal 会按照你设置的速率发送数据。** 它不会像 CUBIC 或 BBR 那样主动探测可用带宽，而是直接按照配置的速率进行数据包 pacing。当发生丢包时，它会发送更多数据，以尽量让实际成功送达的数据速率维持在目标值。
+## Web 管理面板
 
-因此 Brutal 的前提是：你大致知道路径上可用的带宽。如果把速率设得过高，只会制造额外的丢包。
+默认地址：
 
-**只需要部署在一端。** Brutal 控制的是发送行为，并不会改变线上传输的 TCP 协议，因此连接另一端不需要安装或支持任何东西。对于代理服务来说，大部分流量通常都是客户端下载，因此一般只在服务器端启用就能获得主要收益。
+\`\`\`text
+http://服务器IP:23333
+\`\`\`
 
-**连接组（Groups）。** 同一组中的连接共享一个总速率。带宽并不是静态地平均分给每条连接：哪条连接当前需要发送数据，就可以使用相应带宽；如果某条连接没有用完自己的部分，其余连接可以直接使用剩余带宽。
+首次登录后，建议立即设置允许访问的客户端 IP。
 
-连接组有两种创建方式：
+> 内置面板默认使用 HTTP。密码和会话在网络传输时不会被 TLS 加密。如果面板暴露在不可信网络上，建议通过 Nginx、Caddy 等反向代理增加 HTTPS，并配合访问控制使用。
 
-* 通过上面介绍的目标地址规则自动创建；
-* 由应用程序直接为 socket 设置 group id。
+面板可查看或管理：
 
-**规则（Rules）。** 一条规则会把某个目标地址前缀映射到一个连接组。要让规则真正生效，需要同时完成两件事，`brutalctl` 会自动处理：
+- 已接管端口；
+- 当前连接数；
+- 目标 Mbps；
+- CWND gain；
+- 已发送 / 已确认 / 已重传流量；
+- 重传率；
+- 平均 RTT 和最大 RTT；
+- 历史曲线；
+- CSV / JSON 导出；
+- 面板监听地址和访问白名单；
+- 管理员密码；
+- 在线更新。
 
-1. 将规则写入模块维护的 `/proc/net/tcp_brutal/rules`；
-2. 添加一条路由，让内核在新建到该地址前缀的连接时自动选择 Brutal 拥塞控制。
+## CLI 使用
 
-对应的效果类似于：
+进入交互式管理菜单：
 
-```bash
-ip route replace <prefix> via <gateway> congctl lock brutal proto 233
-```
+\`\`\`bash
+sudo tcp-brutal-custom
+\`\`\`
 
-其中下一跳网关会从当前路由表中自动复制。
+常用命令：
 
-`brutalctl` 创建的路由都会带有 `proto 233`，因此可以通过下面的命令查看：
+\`\`\`bash
+# 查看整体状态
+sudo tcp-brutal-custom status
 
-```bash
-ip route show proto 233
-```
+# 443 端口共享 100 Mbps
+# 默认 gain=20，即 2.0x
+sudo tcp-brutal-custom port add 443 100
 
-`brutalctl` 不会修改其他路由。
+# 443 端口共享 80 Mbps
+# gain=15，即 1.5x
+sudo tcp-brutal-custom port add 443 80 gain=15
 
-如果你自行管理路由，例如目标地址通过某个策略路由表访问，可以使用 `noroute`，让 `brutalctl` 只管理规则本身。
+# 查看已配置端口
+sudo tcp-brutal-custom ports
 
-当多条规则同时匹配时，使用**最长前缀匹配**。
+# 删除规则
+# 已经存在的连接会继续运行直到关闭
+sudo tcp-brutal-custom port del 443
 
-**规则只对新连接生效。** 连接会在建立时加入对应规则的连接组。添加规则不会影响已经存在的连接；对已有规则再次执行 `add` 修改速率时，连接组中的已有连接会立即使用新的速率；删除规则后，已有连接仍会共享旧速率直到关闭，新连接则不再匹配该规则。
+# 修改面板监听地址 / 端口 / 白名单
+sudo tcp-brutal-custom panel 0.0.0.0 23334 203.0.113.5
 
-**默认锁定。** 规则默认会配合路由中的 `lock` 使用。启用锁定后，应用程序无法自行修改这些连接使用的拥塞控制算法或 Brutal 参数。
+# 关闭开机自启
+sudo tcp-brutal-custom autostart off
 
-如果某个本身支持 TCP Brutal 的应用尝试设置参数，会收到 `EPERM`，此时应用应该直接继续工作即可。
+# 更新
+sudo tcp-brutal-custom update
 
-如果希望允许应用程序自行设置 Brutal 参数，可以添加规则时使用 `nolock`。
+# 卸载
+sudo tcp-brutal-custom uninstall
+\`\`\`
 
-**不要把 Brutal 设置成系统默认拥塞控制算法。** 对于既没有匹配规则、应用程序也没有主动设置参数的连接，Brutal 默认只会以 1 Mbps 发送。
+## 端口接管是怎么工作的
 
-支持 TCP Brutal 的应用程序可以自行在 socket 上启用，而普通应用可以通过规则覆盖，因此没有必要将 Brutal 设置成系统全局默认值。
+\`\`\`text
+新的 TCP 入站连接
+        │
+        ▼
+cgroup v2 SockOps eBPF
+        │
+        ├─ 本机端口未配置 ─────► 使用原有 TCP 拥塞控制
+        │
+        └─ 本机端口已配置
+                  │
+                  ▼
+      setsockopt(TCP_CONGESTION, "brutal")
+                  │
+                  ▼
+          brutal 内核模块
+                  │
+                  ▼
+        本机端口 → 共享连接组
+                  │
+                  ▼
+       Brutal pacing / 丢包补偿
+\`\`\`
 
-## 开发者指南
+eBPF 程序会在被动 TCP 连接建立时运行。
 
-### 在 socket 上启用 Brutal
+如果该连接的本机监听端口已经加入管理列表，就通过 \`setsockopt(TCP_CONGESTION, "brutal")\` 自动切换拥塞控制算法。
 
-```python
-s.setsockopt(socket.IPPROTO_TCP, TCP_CONGESTION, "brutal".encode())
-```
+随后 Brutal 初始化时，会根据本地端口查找对应连接组，并将该 socket 加入同一组。
 
-然后设置发送速率、拥塞窗口增益，以及可选的连接组 ID。
+**本地端口规则的优先级高于上游的目标地址规则。**
 
-建议的拥塞窗口增益为 1.5x～2x。由于 Linux 内核不能直接使用浮点数，这里用十分之一为单位表示，因此 15 代表 1.5，20 代表 2.0：
+## 共享速率的含义
 
-```c
-struct brutal_params
-{
-    u64 rate;       // 发送速率，单位 bytes/s
-    u32 cwnd_gain;  // CWND 增益，以十分之一为单位（10 = 1.0）
-    u64 group_id;   // 0 = 速率只作用于当前连接（v1 行为）
-} __packed;
-```
+配置的 Mbps 是整个连接组的**目标有效送达速率**，不是严格意义上的物理发送限速器。
 
-Python 示例：
+Brutal 会进行丢包补偿。
 
-```python
-TCP_BRUTAL_PARAMS = 23301
+例如，如果目标速率设置为 100 Mbps，而链路存在丢包，为了尽量让对端实际收到接近 100 Mbps，发送端可能会发送超过 100 Mbps 的流量。
 
-rate = 2000000 # 2 MB/s
-cwnd_gain = 15
-group_id = 42
+因此：
 
-brutal_params_value = struct.pack("<QIQ", rate, cwnd_gain, group_id)
+> 不要把目标速率设置得高于链路实际能够承受的水平。
 
-conn.setsockopt(
-    socket.IPPROTO_TCP,
-    TCP_BRUTAL_PARAMS,
-    brutal_params_value
-)
-```
+组内带宽也不是简单：
 
-v1 使用的、不包含 `group_id` 的 12 字节结构体仍然兼容。
+\`\`\`text
+100 Mbps / 当前连接数
+\`\`\`
 
-也可以通过 `getsockopt` 读取当前参数。对于连接组成员，返回的是整个组的 `rate`、`cwnd_gain` 和 `group_id`：
+而是动态调度。
 
-```python
-rate, cwnd_gain, group_id = struct.unpack(
-    "<QIQ",
-    conn.getsockopt(
-        socket.IPPROTO_TCP,
-        TCP_BRUTAL_PARAMS,
-        20
-    )
-)
-```
+只有一条连接在发送时，它可以占用全部组速率；多条连接同时发送时，它们共享同一个调度时钟。
 
-如果需要检查当前加载的是哪个版本的模块，可以在一个已经使用 Brutal 的连接上读取版本号。v1 模块以及普通 TCP socket 都会返回 `ENOPROTOOPT`：
+## 端口规则生命周期
 
-```python
-TCP_BRUTAL_VERSION = 23302
+### 新增端口
 
-# u32: major << 16 | minor << 8 | patch
-version = struct.unpack(
-    "<I",
-    conn.getsockopt(
-        socket.IPPROTO_TCP,
-        TCP_BRUTAL_VERSION,
-        4
-    )
-)[0]
+\`\`\`bash
+sudo tcp-brutal-custom port add 443 100
+\`\`\`
 
-supports_groups = version >= 0x020000
-```
+只会影响之后建立的新连接。
 
-### 连接组
+已经存在的 443 TCP 连接不会突然切换到 Brutal。
 
-同一用户、同一 network namespace 中，只要多个连接设置了相同的非零 `group_id`，它们就会共同共享 `rate` 作为总带宽。
+### 修改速率
 
-在任意一个组成员上修改参数，都会更新整个连接组。
+再次执行：
 
-只要组中还有至少一条连接处于打开状态，该组就会继续存在。
+\`\`\`bash
+sudo tcp-brutal-custom port add 443 80
+\`\`\`
 
-典型的代理服务器可以把同一客户端的所有连接放进同一个连接组，并使用该客户端的身份生成 group id。这样，无论客户端建立多少条连接，配置的带宽上限都会作用于这些连接的总和。
+会更新原有连接组，因此已经接管的连接会立即使用新的速率。
 
-TCP Brutal v1 没有连接组，因此只能用于所有流量都复用在单条 TCP 连接上的协议。v2 加入连接组后，也可以很好地支持“一条流一条 TCP 连接”的协议。
+### 删除端口
 
-### 规则与应用程序
+\`\`\`bash
+sudo tcp-brutal-custom port del 443
+\`\`\`
 
-如果连接匹配了一条锁定规则，那么设置 `TCP_BRUTAL_PARAMS` 会返回 `EPERM`。
+删除后：
 
-与此同时，由于对应路由也被锁定，即使当前连接实际上已经在使用 Brutal，下面的操作同样会返回 `EPERM`：
+- 新连接不再被接管；
+- 已经进入 Brutal 连接组的连接继续使用原来的组配置；
+- 等这些旧连接关闭后，旧连接组才会完全退出。
 
-```python
-setsockopt(TCP_CONGESTION, "brutal")
-```
+## 适用范围与限制
 
-应用程序应该同时处理这两种情况：
+本项目的端口接管机制作用于：
 
-如果收到 `EPERM`，可以通过 `getsockopt(TCP_CONGESTION)` 检查当前拥塞控制算法。如果已经是 Brutal，就无需再做任何设置，直接发送数据即可。
+> **由本机实际终止 TCP 连接、并由本机发送数据的 socket。**
 
-[example/server.py](example/server.py) 中提供了具体示例。
+当前不适用于：
 
-工具程序也可以直接操作规则文件，而不必调用 `brutalctl`。
+- UDP；
+- QUIC；
+- 纯路由转发；
+- Docker bridge 端口映射；
+- 不在 host network namespace 中的 socket。
 
-读取：
+例如，如果服务运行在 Docker bridge 网络中，通过宿主机 NAT 映射端口，宿主机看到的并不是一个普通的 host-side passive TCP socket，因此这套本地端口接管逻辑不会按预期工作。
 
-```text
-/proc/net/tcp_brutal/rules
-```
+此外，不建议把 Brutal 设置为系统全局默认拥塞控制算法。没有命中规则、也没有应用层主动设置参数的 Brutal socket，会使用模块默认的低速率。
 
-每条规则占一行，以 `key=value` 形式显示，同时包含实时统计信息：
+## 上游目标地址规则
 
-```text
-dst=203.0.113.5/32 rate=12500000 gain=20 lock=1 id=1 members=3 sent=1834021376
-```
+本项目仍然保留 TCP Brutal v2 的目标地址规则。
 
-写入时，每次 write 接受一条命令，其中速率单位为 bytes/s：
+例如：
 
-```text
-add <prefix>[/<len>] rate=<bytes/s> [gain=<tenths>] [nolock]
-del <prefix>[/<len>]
-flush
-```
+\`\`\`bash
+sudo brutalctl add 203.0.113.5/32 100
+sudo brutalctl list
+sudo brutalctl del 203.0.113.5/32
+\`\`\`
 
-如果对已有前缀再次执行 `add`，会直接更新原规则。
+它的逻辑是：
 
-需要注意的是，路由配置是独立的一步。`brutalctl` 除了管理这里的规则文件之外，还会自动负责添加对应路由。
+\`\`\`text
+目标地址前缀 → Brutal 共享连接组
+\`\`\`
 
-### 在代理协议中交换带宽信息
+完整说明请参考：
 
-Brutal 必须知道目标带宽，但大多数基于 TCP 的代理协议本身没有客户端与服务器交换带宽参数的机制。
+[HyNetworks/tcp-brutal](https://github.com/HyNetworks/tcp-brutal)
 
-我们建议复用几乎所有代理协议都会提供的“目标地址”字段：
+如果某个连接同时可以匹配：
 
-支持 TCP Brutal 的客户端可以请求连接到一个特殊地址，例如：
+- 本地端口规则
+- 目标 IP 规则
 
-```text
-_BrutalBwExchange
-```
+则**本地端口规则优先**。
 
-如果服务器识别并接受这个特殊目标，双方就可以通过这条连接交换各自的带宽信息。
+## 更新与维护
 
-### 从源码编译
+执行：
 
-```bash
-make && make load   # 需要安装内核头文件，例如：
-                    # apt install linux-headers-$(uname -r)
+\`\`\`bash
+sudo tcp-brutal-custom update
+\`\`\`
 
-make -C tools       # 编译 brutalctl
-```
+更新流程不是直接覆盖正在运行的模块，而是：
+
+1. 下载和准备新版本；
+2. 停止管理服务；
+3. 主动断开受管端口上的 TCP 连接；
+4. 卸载当前 \`brutal\` 模块；
+5. 安装并切换新的 DKMS 模块和程序；
+6. 重新加载模块并启动服务。
+
+如果内核模块仍被其他连接占用，更新会中止。
+
+如果已经开始切换、但新版安装失败，脚本会尝试恢复之前的程序和模块。
+
+因此建议：
+
+> **在维护窗口执行更新。**
+
+## 卸载
+
+普通卸载：
+
+\`\`\`bash
+sudo tcp-brutal-custom uninstall
+\`\`\`
+
+默认保留：
+
+- 配置文件；
+- 历史数据库。
+
+如果希望彻底删除：
+
+\`\`\`bash
+sudo /usr/local/lib/tcp-brutal-custom/install.sh --uninstall --purge
+\`\`\`
+
+## 从源码构建
+
+内核模块：
+
+\`\`\`bash
+make
+\`\`\`
+
+生成 DKMS 源码包：
+
+\`\`\`bash
+make dkms-tarball
+\`\`\`
+
+管理程序：
+
+\`\`\`bash
+go build -o tcp-brutal-custom .
+\`\`\`
+
+上游兼容的 \`brutalctl\`：
+
+\`\`\`bash
+make -C tools
+\`\`\`
+
+常用检查：
+
+\`\`\`bash
+make format-check
+CGO_ENABLED=0 go test ./...
+\`\`\`
+
+## 目录结构
+
+| 文件 | 作用 |
+| --- | --- |
+| \`brutal_cc.c\` | Brutal 拥塞控制、pacing 与连接组调度 |
+| \`brutal_ports.c\` | 本地 TCP 端口 → Brutal 连接组 |
+| \`brutal_rules.c\` | 上游目标地址前缀规则 |
+| \`brutal_sockopt.c\` | Brutal socket 参数和应用层连接组 |
+| \`selector_linux.go\` | cgroup SockOps eBPF 端口选择器 |
+| \`manager.go\` | Root 管理进程、API、端口控制和统计 |
+| \`main.go\` | CLI、配置和服务入口 |
+| \`history.go\` | SQLite 历史记录、聚合与保留策略 |
+| \`web/\` | 内嵌 Web 管理面板 |
+| \`scripts/install.sh\` | 安装、更新、回滚、卸载 |
+| \`tools/brutalctl.c\` | 上游兼容 \`brutalctl\` |
+
+## 与上游 TCP Brutal 的关系
+
+本项目建立在 [HyNetworks/tcp-brutal](https://github.com/HyNetworks/tcp-brutal) 基础之上。
+
+上游实现了 Hysteria Brutal 拥塞控制在 Linux TCP 中的核心能力。
+
+本项目主要增加的是面向服务器运维的功能：
+
+- 按**本机服务端口**透明启用 Brutal；
+- 端口级共享连接组；
+- eBPF 自动选择；
+- Web / CLI 管理；
+- 历史统计；
+- DKMS 安装；
+- Release 驱动的更新和回滚流程。
+
+更详细的运维说明请参阅：
+
+[CUSTOM.zh.md](CUSTOM.zh.md)
+
+## 许可证
+
+GPL-3.0，详见 [LICENSE](LICENSE)。
+
+上游 TCP Brutal 代码以及本项目的修改版本均继续受 GPL-3.0 和对应署名要求约束。
