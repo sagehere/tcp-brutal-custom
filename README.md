@@ -63,6 +63,25 @@ Supported installation targets:
 
 The kernel module and eBPF selector interact with kernel internals. A successful build alone does not prove that takeover works on every kernel variant; validate on the actual target kernel before relying on it in production.
 
+## One-command install
+
+For normal installations:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sagehere/tcp-brutal-custom/main/scripts/bootstrap.sh | sudo bash
+```
+
+The bootstrap does **not** blindly execute the Release installer. It embeds the project's Ed25519 release public key, verifies its fixed fingerprint, verifies the signature on `hashes.txt`, verifies the `install.sh` SHA-256 from that signed manifest, and only then executes the installer. The installer repeats signature and artifact verification.
+
+To pin a specific signed release instead of `latest`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sagehere/tcp-brutal-custom/main/scripts/bootstrap.sh | \
+  sudo env TCP_BRUTAL_RELEASE_TAG=v2.1.2 bash
+```
+
+> **First-install trust boundary:** the bootstrap itself comes from this GitHub repository. If your threat model includes a full compromise of the repository/account before first installation, independently verify the release-key fingerprint below before granting root privileges. Existing installations pin the key locally, so normal updates do not re-bootstrap trust from GitHub.
+
 ## Verified install
 
 Releases use an offline Ed25519 signing key. The private key is not stored in GitHub or GitHub Actions.
@@ -354,7 +373,7 @@ It **never auto-merges and never publishes a release**. If the merge has conflic
 
 ## Release signing
 
-GitHub Actions builds an **unsigned release bundle** and uploads it as a workflow artifact. It no longer publishes trusted releases directly.
+GitHub Actions first builds an **unsigned release bundle** and uploads it as a workflow artifact. The private signing key never enters GitHub. The bundle's `hashes.txt` is signed offline; a separate publication workflow accepts only that public signature, verifies the staged artifact byte-for-byte, and then creates the tag/Release.
 
 A release must be signed outside GitHub with the offline Ed25519 private key:
 
