@@ -23,6 +23,12 @@ For an already-installed system, the trusted public key is pinned locally and is
 For a first installation, the public key still needs an independent trust bootstrap. Verify the fingerprint above through a channel you trust independently of the GitHub repository before granting root privileges to the installer.
 
 
+## One-command bootstrap
+
+`scripts/bootstrap.sh` provides the convenient one-command installation path. It embeds the same release public key and fingerprint, verifies the signed manifest and the installer checksum, and only then executes `install.sh`.
+
+This improves usability without weakening Release verification, but it does **not** remove the first-install bootstrap problem: if an attacker already controls the GitHub repository before a user obtains `bootstrap.sh`, the attacker can change both the script and documentation. High-assurance first installs therefore still require checking the fingerprint through an independent trusted channel.
+
 ## Migration from unsigned versions
 
 Systems installed before signed-manifest verification was introduced still have an older updater that trusts GitHub Release plus SHA-256 only. Their **first** move to a signed release cannot be retroactively protected by the new verifier.
