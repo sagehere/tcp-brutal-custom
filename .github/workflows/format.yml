@@ -30,3 +30,6 @@ jobs:
 
       - name: Run Go tests
         run: CGO_ENABLED=0 go test ./...
+
+      - name: Check shell syntax
+        run: bash -n scripts/*.sh
