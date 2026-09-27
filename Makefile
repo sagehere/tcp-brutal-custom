@@ -59,7 +59,7 @@ clean-dkms.conf:
 
 $(DKMS_TARBALL): dkms.conf Makefile $(SRCS)
 	$(TAR) zcf $(DKMS_TARBALL) \
-		--transform 's,^,./dkms_source_tree/,' \
+		--transform 's,^,dkms_source_tree/,' \
 		dkms.conf \
 		Makefile \
 		$(SRCS)

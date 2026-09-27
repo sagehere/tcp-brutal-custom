@@ -193,7 +193,14 @@ for file in "$name-linux-$arch" "$name.dkms.tar.gz" install.sh; do
   [[ $(wc -l <"$tmp/check") == 1 ]] || { echo "Missing checksum for $file" >&2; exit 1; }
   (cd "$tmp" && sha256sum -c check)
 done
-module_version=$(tar xOzf "$tmp/$name.dkms.tar.gz" ./dkms_source_tree/dkms.conf | sed -n 's/^PACKAGE_VERSION="\([^"]*\)"$/\1/p')
+dkms_conf_member=$(tar tzf "$tmp/$name.dkms.tar.gz" | awk '$0=="dkms_source_tree/dkms.conf" || $0=="./dkms_source_tree/dkms.conf" {print; exit}')
+[[ -n "$dkms_conf_member" ]] || { echo 'Invalid DKMS package: dkms.conf missing' >&2; exit 1; }
+case "$dkms_conf_member" in
+  dkms_source_tree/dkms.conf) dkms_strip=1 ;;
+  ./dkms_source_tree/dkms.conf) dkms_strip=2 ;;
+  *) echo 'Invalid DKMS package layout' >&2; exit 1 ;;
+esac
+module_version=$(tar xOzf "$tmp/$name.dkms.tar.gz" "$dkms_conf_member" | sed -n 's/^PACKAGE_VERSION="\([^"]*\)"$/\1/p')
 [[ "$module_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Invalid DKMS package version' >&2; exit 1; }
 
 apt-get update
@@ -221,7 +228,11 @@ if [[ ! -f "$library/module-version" && ! -d "$data/upstream" ]]; then
     ip -6 route show proto 233 >"$data/upstream/routes-v6" 2>/dev/null || true
   fi
 fi
-tar xzf "$tmp/$name.dkms.tar.gz" -C "/usr/src/$name-$module_version" --strip-components=1
+tar xzf "$tmp/$name.dkms.tar.gz" -C "/usr/src/$name-$module_version" --strip-components="$dkms_strip"
+[[ -f "/usr/src/$name-$module_version/dkms.conf" && -f "/usr/src/$name-$module_version/Makefile" ]] || {
+  echo 'Invalid DKMS source package layout after extraction' >&2
+  exit 1
+}
 if ! dkms status -m "$name" -v "$module_version" | grep -q 'added\|built\|installed'; then
   dkms add -m "$name" -v "$module_version"
 fi
