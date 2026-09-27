@@ -31,7 +31,7 @@ const (
 	portsPath  = "/proc/net/tcp_brutal/ports"
 )
 
-var version = "2.1.2-dev"
+var version = "2.1.3-dev"
 
 type portConfig struct {
 	Port     uint16  `json:"port"`
