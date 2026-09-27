@@ -1,169 +1,319 @@
-# <img src="logo.png" width="400">
+# TCP Brutal Custom
 
-> **TCP Brutal Custom fork.** The custom port takeover, panel, installer, and release assets live at [sagehere/tcp-brutal-custom](https://github.com/sagehere/tcp-brutal-custom). See [custom usage](CUSTOM.zh.md). The destination-rule documentation below comes from [HyNetworks/tcp-brutal](https://github.com/HyNetworks/tcp-brutal).
+<p align="center">
+  <img src="logo.png" width="400" alt="TCP Brutal">
+</p>
 
-TCP Brutal is [Hysteria](https://hysteria.network/)'s congestion control algorithm ported to TCP, as a Linux kernel module. Information about Brutal itself can be found in the [Hysteria documentation](https://hysteria.network/docs/advanced/Full-Server-Config/#bandwidth-behavior-explained).
+<p align="center">
+  Transparent TCP Brutal takeover by local server port, with shared-rate groups, a Web panel, history, DKMS deployment, and update/rollback tooling.
+</p>
 
-The upstream TCP Brutal project is an official Hysteria subproject. This custom fork is maintained separately.
+<p align="center">
+  <a href="README.zh.md">中文文档</a> ·
+  <a href="CUSTOM.zh.md">Detailed custom guide</a> ·
+  <a href="https://github.com/HyNetworks/tcp-brutal">Upstream TCP Brutal</a>
+</p>
 
-**中文文档：[README.zh.md](README.zh.md)**
+> This project is based on [HyNetworks/tcp-brutal](https://github.com/HyNetworks/tcp-brutal) v2.0.1 and is distributed under GPL-3.0. The upstream project provides the Brutal congestion-control implementation and destination-rule support; this fork adds transparent takeover by **local TCP service port**, management and deployment tooling.
 
-> **New in v2:** TCP Brutal no longer needs special support from the application. Set a rate for a destination once, and every connection to it uses Brutal, any program, any TCP-based protocol. Stop waiting and use it right now!
+## What this fork adds
 
-https://github.com/user-attachments/assets/26c5ab0d-759b-4499-a891-c533a8b975ce
+The main goal is simple: run a normal TCP service on a Debian/Ubuntu VPS and enable Brutal **without modifying the application**.
 
-## Quick start
+For example:
 
-### Install
+\`\`\`bash
+sudo tcp-brutal-custom port add 443 100
+\`\`\`
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/sagehere/tcp-brutal-custom/main/scripts/install.sh -o /tmp/tcp-brutal-custom-install.sh && sudo bash /tmp/tcp-brutal-custom-install.sh
-```
+New TCP connections accepted on local port \`443\` will use Brutal automatically. All connections on that port share a **100 Mbps target effective rate** as one group.
 
-This installs the kernel module through DKMS and the `brutalctl` tool to `/usr/local/bin`. Linux 5.10 or later is required.
+This is not 100 Mbps per connection:
 
-On NixOS with flakes, add the module to your `flake.nix`; it provides `brutalctl` as well:
+- one active connection can use the whole group rate;
+- multiple active connections dynamically share the same group rate;
+- changing the rate updates existing managed connections immediately;
+- adding or deleting a port rule affects only newly established connections.
 
-```nix
-{
-  inputs.tcp-brutal.url = "github:HyNetworks/tcp-brutal";
-  
-  outputs = { nixpkgs, tcp-brutal, ... }: {
-    nixosConfigurations.myHost = nixpkgs.lib.nixosSystem {
-      system = "x86_64-linux";
-      modules = [
-        # ... your configuration.nix ...
-        tcp-brutal.nixosModules.default
-        { boot.tcp-brutal.enable = true; }
-      ];
-    };
-  };
-}
-```
+IPv4 and IPv6 connections on the same local port use the same group.
 
-### Use it for a destination
+## Features
 
-Run this on the side that sends the data. For downloads from your server, that is the server:
+- **Transparent port takeover** — select Brutal by local TCP server port; no application patching is required.
+- **Shared-rate groups** — all managed connections on one port share one target rate instead of multiplying the rate per connection.
+- **eBPF SockOps selector** — switches eligible passive TCP connections to the \`brutal\` congestion-control algorithm at connection establishment.
+- **Web management panel** — manage ports, rates, CWND gain, access control, updates and history.
+- **CLI management** — add/remove ports, inspect status, change panel settings, update or uninstall from SSH.
+- **Traffic history** — sent, acknowledged and retransmitted bytes plus RTT statistics, stored in SQLite.
+- **DKMS installation** — builds the kernel module for the running kernel and survives normal kernel upgrades.
+- **Update/rollback flow** — stages a release, switches the module in a controlled maintenance flow, and attempts rollback if switching fails.
+- **Upstream compatibility** — original destination-IP rules and socket parameter APIs remain available.
 
-```bash
-# Everything sent to 203.0.113.5 shares 100 Mbps, whichever program sends it
-brutalctl add 203.0.113.5/32 100
-```
+## Requirements
 
-The number is the total for all connections to that destination, which should be what the receiving side's link can actually take. A single active connection gets all of it; several share it. No application support is needed: a plain web server, proxy tool, rsync or SSH to that address is covered.
+Supported installation targets:
 
-```bash
-brutalctl list                   # rules, and how many connections each one has right now
-brutalctl add 203.0.113.5/32 50  # change the rate; existing connections follow immediately
-brutalctl del 203.0.113.5/32
-brutalctl flush
-```
+- Debian 12 / 13
+- Ubuntu 22.04 / 24.04
+- amd64 / arm64
+- systemd
+- cgroup v2
+- root access
+- DKMS and matching kernel headers
 
-**A connection picks up a rule only when it is established, so add rules before making the connections that should use them; running programs need no restart, but their existing connections are unaffected. After that, `add` on the same prefix changes the rate live for every connection in the group, and `del` stops new connections from matching while existing ones keep the old rate until they close.**
+The kernel module and eBPF selector interact with kernel internals. A successful build alone does not prove that takeover works on every kernel variant; validate on the actual target kernel before relying on it in production.
 
-Rules do not survive a reboot; put the `add` commands in a boot script if needed.
+## Quick install
 
-### Check that it works
+\`\`\`bash
+curl -fsSL https://raw.githubusercontent.com/sagehere/tcp-brutal-custom/main/scripts/install.sh -o /tmp/tcp-brutal-custom-install.sh
+sudo bash /tmp/tcp-brutal-custom-install.sh
+\`\`\`
 
-Download something from the server and watch the rate, or use the speed test in [example](example): the client opens several connections that share one rate as a group.
+The installer downloads release assets, verifies SHA-256 hashes, installs the DKMS module and management program, and creates the required systemd services.
 
-```bash
-# Server, listening on TCP port 1234
-python server.py -p 1234
+On first install, a random administrator password is printed.
 
-# Client, connect to example.com:1234, download at 50 Mbps in total
-# over 4 connections (-n) for 10 seconds (-t)
-python client.py -p 1234 example.com 50
-```
+Default locations:
 
-The example speaks to the module directly and works without a rule. **With a rule for the client's address in place, the rule's rate wins.**
+| Item | Path |
+| --- | --- |
+| Configuration | \`/etc/tcp-brutal-custom/config.json\` |
+| History database | \`/var/lib/tcp-brutal-custom/history.db\` |
+| Manager socket | \`/run/tcp-brutal-custom/manager.sock\` |
+| Port rules | \`/proc/net/tcp_brutal/ports\` |
+| Destination rules | \`/proc/net/tcp_brutal/rules\` |
 
-## How it works
+## Web panel
 
-**Brutal sends at the rate you set.** It does not probe for bandwidth like cubic or BBR. It paces packets at the configured rate, and when packets are lost it sends more so that the delivered rate stays at the target. This assumes you know the bandwidth of the path; set it too high and you only produce loss.
+The panel listens on:
 
-**It works on one side.** Brutal controls sending, and the TCP protocol on the wire is unchanged, so the other end needs nothing. Proxy users mostly download, so running it on the server alone gives most of the benefit.
+\`\`\`text
+http://SERVER_IP:23333
+\`\`\`
 
-**Groups.** Connections in a group share one rate as their total. Bandwidth is not divided statically: whoever is sending gets it, and a connection that uses less than its share leaves the rest to the others. Groups are formed in two ways: by a destination rule (above), or by an application that sets a group id on its sockets (below).
+After the first login, configure the allowed client IP list.
 
-**Rules.** A rule maps a destination prefix to a group. Two things are needed for it to take effect, and `brutalctl` does both: the rule itself, kept by the module in `/proc/net/tcp_brutal/rules`, and a route that makes the kernel pick brutal for new connections to that prefix, the same as `ip route replace <prefix> via <gateway> congctl lock brutal proto 233` with the next hop copied from the current routing table. Routes it creates carry `proto 233`, so `ip route show proto 233` lists them and `brutalctl` never touches other routes. Use `noroute` if you manage the route yourself, for example when the destination is reached through a policy routing table. When several rules match, the longest prefix wins.
+> The built-in panel uses HTTP. Passwords and sessions are therefore not encrypted in transit. If the panel is reachable over an untrusted network, place it behind an HTTPS reverse proxy and restrict access appropriately.
 
-**Rules apply to new connections.** A connection joins a rule's group when it is established. Adding a rule does not affect connections that already exist; changing a rule's rate with `add` updates its group live; deleting a rule leaves its existing connections sharing the old rate until they close, while new ones no longer match.
+The panel provides:
 
-**Locked by default.** With the route's `lock` and the rule together, applications cannot change the algorithm or the rate on those connections. An application that itself supports TCP Brutal gets `EPERM` when it tries and should simply carry on. Add the rule with `nolock` if applications should be allowed to set their own params instead.
+- current managed ports and connection counts;
+- target rate and CWND gain;
+- sent / acknowledged / retransmitted traffic;
+- retransmission ratio;
+- mean and maximum RTT;
+- historical charts and CSV/JSON export;
+- panel settings and password management;
+- update controls.
 
-**Do not set brutal as the system default congestion control.** A connection with no rule and no application settings runs at 1 Mbps. Applications that support TCP Brutal enable it on their own sockets, and rules cover everything else, so there is no reason to make it the default.
+## CLI usage
 
-## For developers
+Open the interactive manager:
 
-### Enabling it on a socket
+\`\`\`bash
+sudo tcp-brutal-custom
+\`\`\`
 
-```python
-s.setsockopt(socket.IPPROTO_TCP, TCP_CONGESTION, "brutal".encode())
-```
+Common commands:
 
-Then set the send rate, the congestion window gain (1.5x to 2x recommended, written as 15 or 20 since the kernel has no floating point) and optionally a group:
+\`\`\`bash
+# Overall status
+sudo tcp-brutal-custom status
 
-```c
-struct brutal_params
-{
-    u64 rate;      // Send rate in bytes per second
-    u32 cwnd_gain; // CWND gain in tenths (10=1.0)
-    u64 group_id;  // 0 = rate applies to this connection only (v1 behavior)
-} __packed;
-```
+# 443 shares a 100 Mbps target rate; default gain is 20 = 2.0x
+sudo tcp-brutal-custom port add 443 100
 
-```python
-TCP_BRUTAL_PARAMS = 23301
+# 443 shares 80 Mbps, CWND gain 15 = 1.5x
+sudo tcp-brutal-custom port add 443 80 gain=15
 
-rate = 2000000 # 2 MB/s
-cwnd_gain = 15
-group_id = 42
-brutal_params_value = struct.pack("<QIQ", rate, cwnd_gain, group_id)
-conn.setsockopt(socket.IPPROTO_TCP, TCP_BRUTAL_PARAMS, brutal_params_value)
-```
+# List configured ports
+sudo tcp-brutal-custom ports
 
-The 12-byte v1 struct without `group_id` is still accepted. The same option can be read back with getsockopt; a group member reports the group's rate, cwnd_gain and group_id:
+# Remove the rule; existing connections keep running until they close
+sudo tcp-brutal-custom port del 443
 
-```python
-rate, cwnd_gain, group_id = struct.unpack("<QIQ", conn.getsockopt(socket.IPPROTO_TCP, TCP_BRUTAL_PARAMS, 20))
-```
+# Change panel listener / allow-list
+sudo tcp-brutal-custom panel 0.0.0.0 23334 203.0.113.5
 
-To check which module is loaded, read its version on a connection that already uses brutal. v1 modules, and plain TCP sockets, fail with `ENOPROTOOPT`:
+# Disable service autostart
+sudo tcp-brutal-custom autostart off
 
-```python
-TCP_BRUTAL_VERSION = 23302
+# Update from the latest release
+sudo tcp-brutal-custom update
 
-# u32: major << 16 | minor << 8 | patch
-version = struct.unpack("<I", conn.getsockopt(socket.IPPROTO_TCP, TCP_BRUTAL_VERSION, 4))[0]
-supports_groups = version >= 0x020000
-```
+# Uninstall
+sudo tcp-brutal-custom uninstall
+\`\`\`
 
-### Groups
+## How port takeover works
 
-All connections that set the same non-zero `group_id`, from the same user and network namespace, share `rate` as their total. Setting params on any member updates the whole group. A group exists as long as one member is open.
+\`\`\`text
+Incoming TCP connection
+        │
+        ▼
+cgroup v2 SockOps eBPF program
+        │
+        ├─ local port not configured ─────► normal TCP congestion control
+        │
+        └─ local port configured
+                  │
+                  ▼
+      setsockopt(TCP_CONGESTION, "brutal")
+                  │
+                  ▼
+          brutal kernel module
+                  │
+                  ▼
+       local port → shared group
+                  │
+                  ▼
+       Brutal pacing / loss compensation
+\`\`\`
 
-A proxy server typically puts all connections of one client into one group keyed by that client's identity, so the client's bandwidth setting holds across all of its connections. TCP Brutal v1 had no groups, so it was only usable with protocols that multiplex everything into a single TCP connection; with groups, one-connection-per-stream protocols work too.
+The selector runs on the passive-established SockOps event. If the local port is enabled, it switches the socket to \`brutal\`. When Brutal initializes, the module looks up the local port and joins the socket to that port's shared group.
 
-### Rules and applications
+Port rules have priority over upstream destination-IP rules.
 
-On a connection covered by a locked rule, `TCP_BRUTAL_PARAMS` returns `EPERM`, and because the route is locked, so does `setsockopt(TCP_CONGESTION, "brutal")` even though brutal is already active. Handle both: on `EPERM`, check the current algorithm with `getsockopt(TCP_CONGESTION)`, and if it is brutal, just send. [example/server.py](example/server.py) shows this.
+### Group behavior
 
-Tools can use the rules file directly instead of `brutalctl`. Reading `/proc/net/tcp_brutal/rules` gives one rule per line as `key=value` pairs with live counters:
+The configured Mbps value is the group's **target effective delivered rate**, not a strict wire-rate shaper.
 
-```
-dst=203.0.113.5/32 rate=12500000 gain=20 lock=1 id=1 members=3 sent=1834021376
-```
+Brutal compensates for loss. When loss is observed, the actual sending rate can exceed the configured target in an attempt to maintain the delivered rate. Do not configure a target higher than the path can realistically sustain.
 
-Writing accepts one command per write, with the rate in bytes per second: `add <prefix>[/<len>] rate=<bytes/s> [gain=<tenths>] [nolock]`, `del <prefix>[/<len>]` and `flush`. `add` on an existing prefix updates it in place. The route is a separate step, which is what `brutalctl` adds on top.
+Bandwidth is scheduled dynamically across group members rather than divided into fixed per-connection shares.
 
-### Exchanging bandwidth in a proxy protocol
+### Rule lifecycle
 
-Brutal needs to know the bandwidth, and most TCP proxy protocols have no way for the client and server to exchange it. We suggest using the "destination address" field that every proxy protocol has: a client that supports TCP Brutal requests a connection to a special address such as `_BrutalBwExchange`, and if the server accepts, both sides exchange their bandwidth over that connection.
+- **Add a new port rule:** only future connections are taken over.
+- **Change an existing port's rate or gain:** existing group members receive the new values immediately.
+- **Delete a port rule:** new connections stop matching; existing managed connections continue until they close.
 
-### Building from source
+## Scope and limitations
 
-```bash
-make && make load   # kernel headers required, e.g. apt install linux-headers-$(uname -r)
-make -C tools       # brutalctl
-```
+TCP Brutal controls **locally generated outgoing TCP traffic** for a managed socket.
+
+The custom local-port takeover currently does **not** cover:
+
+- UDP;
+- QUIC;
+- pure routed/forwarded traffic;
+- Docker bridge port mapping;
+- sockets outside the host network namespace.
+
+If your service is behind a container bridge or only forwards traffic without terminating TCP on the host, the host local-port selector will not see it as a normal host-side passive TCP connection.
+
+Do not set Brutal as the system-wide default congestion-control algorithm. Unmatched sockets without explicit Brutal parameters can otherwise fall back to the module's low default rate.
+
+## Upstream destination rules
+
+The original TCP Brutal v2 destination-rule interface is still retained.
+
+Example:
+
+\`\`\`bash
+sudo brutalctl add 203.0.113.5/32 100
+sudo brutalctl list
+sudo brutalctl del 203.0.113.5/32
+\`\`\`
+
+Destination rules group connections by remote prefix. For full details, see the [upstream TCP Brutal documentation](https://github.com/HyNetworks/tcp-brutal).
+
+When a connection matches both mechanisms, the local **port rule is applied first**.
+
+## Updates and maintenance
+
+\`\`\`bash
+sudo tcp-brutal-custom update
+\`\`\`
+
+The update flow stages the new version, then enters a maintenance switch:
+
+1. stop the management services;
+2. disconnect TCP connections on managed ports;
+3. unload the current \`brutal\` module;
+4. install/switch the DKMS module and binaries;
+5. load the new module and restart services.
+
+If the module is still busy, the switch is aborted. If switching fails after changes begin, the installer attempts to restore the previous module and program.
+
+Run updates during a maintenance window.
+
+## Uninstall
+
+Standard uninstall keeps configuration and history:
+
+\`\`\`bash
+sudo tcp-brutal-custom uninstall
+\`\`\`
+
+To remove persistent configuration and history as well:
+
+\`\`\`bash
+sudo /usr/local/lib/tcp-brutal-custom/install.sh --uninstall --purge
+\`\`\`
+
+## Build from source
+
+Kernel module / DKMS source package:
+
+\`\`\`bash
+make
+make dkms-tarball
+\`\`\`
+
+Management program:
+
+\`\`\`bash
+go build -o tcp-brutal-custom .
+\`\`\`
+
+Upstream-compatible CLI:
+
+\`\`\`bash
+make -C tools
+\`\`\`
+
+Useful checks:
+
+\`\`\`bash
+make format-check
+CGO_ENABLED=0 go test ./...
+\`\`\`
+
+## Repository layout
+
+| Path | Purpose |
+| --- | --- |
+| \`brutal_cc.c\` | Brutal congestion control, pacing and group scheduling |
+| \`brutal_ports.c\` | Local TCP port → Brutal group rules |
+| \`brutal_rules.c\` | Upstream destination-prefix rules |
+| \`brutal_sockopt.c\` | Brutal socket options and application groups |
+| \`selector_linux.go\` | cgroup SockOps eBPF port selector |
+| \`manager.go\` | Root manager, API, port control and statistics |
+| \`main.go\` | CLI, configuration and service modes |
+| \`history.go\` | SQLite history, aggregation and retention |
+| \`web/\` | Embedded management panel |
+| \`scripts/install.sh\` | Install, update, rollback and uninstall flow |
+| \`tools/brutalctl.c\` | Upstream-compatible \`brutalctl\` CLI |
+
+## Relationship to upstream
+
+This fork builds on [HyNetworks/tcp-brutal](https://github.com/HyNetworks/tcp-brutal), an implementation of Hysteria's Brutal congestion-control behavior for Linux TCP.
+
+The custom additions in this repository focus on operational deployment:
+
+- transparent takeover by **local service port**;
+- shared per-port groups;
+- eBPF-based socket selection;
+- Web/CLI management;
+- persistent history;
+- DKMS installation and release-driven updates.
+
+For a more detailed Chinese operational guide, see [CUSTOM.zh.md](CUSTOM.zh.md).
+
+## License
+
+GPL-3.0. See [LICENSE](LICENSE).
+
+The upstream TCP Brutal code and this modified work remain subject to the GPL-3.0 license and the corresponding attribution requirements.
