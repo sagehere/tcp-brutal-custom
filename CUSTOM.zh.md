@@ -17,24 +17,24 @@ Release 使用离线 Ed25519 私钥签名。首次安装不再推荐直接执行
 ## 管理
 
 ```bash
-sudo tcp-brutal-custom                     # 交互菜单
-sudo tcp-brutal-custom status              # 模块、规则、BPF、升级状态
-sudo tcp-brutal-custom port add 443 100    # 443 端口共享 100 Mbps，gain 默认 20=2.0
-sudo tcp-brutal-custom port add 443 80 gain=15
-sudo tcp-brutal-custom port del 443
-sudo tcp-brutal-custom ports
-sudo tcp-brutal-custom panel 0.0.0.0 23334 203.0.113.5
+sudo tbc                     # 交互菜单
+sudo tbc status              # 模块、规则、BPF、升级状态
+sudo tbc port add 443 100    # 443 端口共享 100 Mbps，gain 默认 20=2.0
+sudo tbc port add 443 80 gain=15
+sudo tbc port del 443
+sudo tbc ports
+sudo tbc panel 0.0.0.0 23334 203.0.113.5
 sudo systemctl restart tcp-brutal-custom-web
-sudo tcp-brutal-custom autostart off
-sudo tcp-brutal-custom update              # 仅本机 root/SSH 可触发
-sudo tcp-brutal-custom uninstall
+sudo tbc autostart off
+sudo tbc update              # 仅本机 root/SSH 可触发
+sudo tbc uninstall
 ```
 
 Web 面板可以检查是否存在新版本和查看发布说明，但不能触发维护升级。原因是升级过程会断开受管连接并替换内核模块，属于高影响操作。
 
 原有目标 IP 接口 `brutalctl add/del/list/flush` 保持可用；`brutalctl port ...` 转发到定制管理程序。端口规则在连接建立时优先匹配。面板和 SSH 端口不会自动加入接管。
 
-面板展示实际发送、确认和重传字节；重传率为时间窗口内重传字节除以总发送字节。RTT 为采样均值及最大值。10 秒、1 分钟、1 小时数据分别保留 7 天、90 天、365 天。CSV/JSON 导出包含配置事件和统计间断标记。历史库达到 1 GiB 时会清理旧数据并记录统计空缺。
+面板展示应发送（不重复的 TCP 数据）、实发送（含重传）和确认字节；重传率为时间窗口内重传字节除以实发送字节。当前连接详情可查看客户端 IP、端口、TCP 状态和拥塞控制算法，不保存 IP 历史。可在面板设置中管理两个服务的开机启动。RTT 为采样均值及最大值。10 秒、1 分钟、1 小时数据分别保留 7 天、90 天、365 天。CSV/JSON 导出包含两种发送量、配置事件和统计间断标记。历史库达到 1 GiB 时会清理旧数据并记录统计空缺。
 
 ## 更新安全
 
@@ -59,7 +59,7 @@ bash scripts/publish-release.sh vX.Y.Z /path/to/release-signing-key.pem build
 
 ```bash
 make dkms-tarball
-go build -o tcp-brutal-custom .
+go build -o tbc .
 ```
 
 模块名和拥塞控制算法名仍为 `brutal`。目标 IP 规则原始接口由上游文档说明。内核模块和 BPF 程序需在实际目标内核上验证；仅编译通过不能证明接管成功。

@@ -20,6 +20,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -104,8 +105,8 @@ func randomToken(n int) (string, error) {
 }
 
 func setPassword(c *config, password string) error {
-	if len(password) < 16 {
-		return errors.New("password needs at least 16 characters")
+	if utf8.RuneCountInString(password) < 8 {
+		return errors.New("password needs at least 8 characters")
 	}
 	salt, err := randomToken(16)
 	if err != nil {
@@ -320,12 +321,12 @@ func runCLI(args []string) error {
 			return localRequest("PUT", "/api/v1/autostart", strings.NewReader(string(b)))
 		}
 	}
-	return errors.New("usage: tcp-brutal-custom [manager|web|init [panel-port]|status|ports|port add PORT Mbps [gain=20]|port del PORT|password NEW|update|autostart on|autostart off]")
+	return errors.New("usage: tbc [manager|web|init [panel-port]|status|ports|port add PORT Mbps [gain=20]|port del PORT|password NEW|update|autostart on|autostart off]")
 }
 
 func menu() error {
 	for {
-		fmt.Println("1 Install  2 Status  3 Ports  4 Add port  5 Delete port  6 Update  7 Autostart on  8 Autostart off  9 Panel settings  10 Uninstall  11 Backup  12 Restore  0 Exit")
+		fmt.Printf("TCP Brutal Custom    v%s\n1 Install\n2 Status\n3 Ports\n4 Add port\n5 Delete port\n6 Update\n7 Autostart on\n8 Autostart off\n9 Panel settings\n10 Uninstall\n11 Backup\n12 Restore\n0 Exit\n", version)
 		var choice, port, rate, host, allow string
 		fmt.Print("> ")
 		fmt.Scanln(&choice)

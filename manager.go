@@ -36,6 +36,8 @@ type portState struct {
 	Sent       uint64        `json:"sent"`
 	Acked      uint64        `json:"acked"`
 	Retrans    uint64        `json:"retrans"`
+	Expected   uint64        `json:"expected_bytes"`
+	Actual     uint64        `json:"actual_bytes"`
 	RTTSum     uint64        `json:"rtt_sum_us"`
 	RTTSamples uint64        `json:"rtt_samples"`
 	RTTMax     uint32        `json:"rtt_max_us"`
@@ -172,7 +174,9 @@ func parsePorts() ([]portState, error) {
 			}
 		}
 		num := func(k string) uint64 { v, _ := strconv.ParseUint(fields[k], 10, 64); return v }
-		out = append(out, portState{Port: uint16(num("port")), Active: num("active") == 1, Rate: num("rate"), Gain: uint32(num("gain")), Group: num("id"), Members: uint32(num("members")), Sent: num("sent"), Acked: num("acked"), Retrans: num("retrans"), RTTSum: num("rtt_sum"), RTTSamples: num("rtt_samples"), RTTMax: uint32(num("rtt_max"))})
+		p := portState{Port: uint16(num("port")), Active: num("active") == 1, Rate: num("rate"), Gain: uint32(num("gain")), Group: num("id"), Members: uint32(num("members")), Sent: num("sent"), Acked: num("acked"), Retrans: num("retrans"), RTTSum: num("rtt_sum"), RTTSamples: num("rtt_samples"), RTTMax: uint32(num("rtt_max"))}
+		p.Expected, p.Actual = sendBytes(p.Sent, p.Retrans)
+		out = append(out, p)
 	}
 	return out, nil
 }
@@ -437,6 +441,8 @@ func (m *manager) api(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		jsonReply(w, 200, states)
+	case r.Method == "GET" && r.URL.Path == "/api/v1/connections":
+		m.connections(w, r)
 	case r.Method == "POST" && r.URL.Path == "/api/v1/ports":
 		m.putPort(w, r)
 	case r.Method == "DELETE" && strings.HasPrefix(r.URL.Path, "/api/v1/ports/"):
@@ -449,6 +455,8 @@ func (m *manager) api(w http.ResponseWriter, r *http.Request) {
 		m.settings(w, r)
 	case r.Method == "PUT" && r.URL.Path == "/api/v1/autostart":
 		m.autostart(w, r)
+	case r.Method == "GET" && r.URL.Path == "/api/v1/autostart":
+		m.autostartStatus(w, r)
 	case r.Method == "GET" && r.URL.Path == "/api/v1/update/check":
 		m.checkUpdate(w, r)
 	case r.Method == "POST" && r.URL.Path == "/api/v1/update":
@@ -587,7 +595,7 @@ func (m *manager) metrics(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 		w.Header().Set("Content-Disposition", "attachment; filename=brutal-history.csv")
 		csvw := csv.NewWriter(w)
-		csvw.Write([]string{"time_unix", "port", "group", "sent_bytes", "acked_bytes", "retrans_bytes", "retrans_percent", "success", "failure", "members", "rtt_mean_us", "rtt_max_us", "gap", "event"})
+		csvw.Write([]string{"time_unix", "port", "group", "sent_bytes", "acked_bytes", "retrans_bytes", "retrans_percent", "success", "failure", "members", "rtt_mean_us", "rtt_max_us", "gap", "event", "expected_bytes", "actual_bytes"})
 		for _, x := range rows {
 			retrans := ""
 			if x.Sent > 0 {
@@ -597,10 +605,10 @@ func (m *manager) metrics(w http.ResponseWriter, r *http.Request) {
 			if x.RTTSamples > 0 {
 				mean = fmt.Sprintf("%d", x.RTTSum/x.RTTSamples)
 			}
-			csvw.Write([]string{strconv.FormatInt(x.Time, 10), strconv.Itoa(int(x.Port)), strconv.FormatUint(x.Group, 10), strconv.FormatUint(x.Sent, 10), strconv.FormatUint(x.Acked, 10), strconv.FormatUint(x.Retrans, 10), retrans, strconv.FormatUint(x.Success, 10), strconv.FormatUint(x.Failure, 10), strconv.Itoa(int(x.Members)), mean, strconv.Itoa(int(x.RTTMax)), strconv.FormatBool(x.Gap), ""})
+			csvw.Write([]string{strconv.FormatInt(x.Time, 10), strconv.Itoa(int(x.Port)), strconv.FormatUint(x.Group, 10), strconv.FormatUint(x.Sent, 10), strconv.FormatUint(x.Acked, 10), strconv.FormatUint(x.Retrans, 10), retrans, strconv.FormatUint(x.Success, 10), strconv.FormatUint(x.Failure, 10), strconv.Itoa(int(x.Members)), mean, strconv.Itoa(int(x.RTTMax)), strconv.FormatBool(x.Gap), "", strconv.FormatUint(x.Expected, 10), strconv.FormatUint(x.Actual, 10)})
 		}
 		for _, x := range events {
-			csvw.Write([]string{strconv.FormatInt(x.Time, 10), "", "", "", "", "", "", "", "", "", "", "", "", x.Kind + ":" + x.Detail})
+			csvw.Write([]string{strconv.FormatInt(x.Time, 10), "", "", "", "", "", "", "", "", "", "", "", "", "", x.Kind + ":" + x.Detail, "", ""})
 		}
 		csvw.Flush()
 		return
@@ -719,6 +727,36 @@ func (m *manager) autostart(w http.ResponseWriter, r *http.Request) {
 	}
 	m.history.addEvent("autostart", in)
 	jsonReply(w, 200, map[string]string{"state": in.State})
+}
+
+func autostartState(query func(string) (string, error)) map[string]any {
+	services := []string{"tcp-brutal-custom-manager.service", "tcp-brutal-custom-web.service"}
+	states := make([]bool, len(services))
+	unknown := false
+	for i, service := range services {
+		value, err := query(service)
+		value = strings.TrimSpace(value)
+		if err != nil && value != "disabled" && value != "static" && value != "masked" {
+			unknown = true
+		}
+		states[i] = value == "enabled"
+	}
+	state := "off"
+	if unknown {
+		state = "unknown"
+	} else if states[0] && states[1] {
+		state = "on"
+	} else if states[0] || states[1] {
+		state = "partial"
+	}
+	return map[string]any{"state": state, "manager": states[0], "web": states[1]}
+}
+
+func (m *manager) autostartStatus(w http.ResponseWriter, r *http.Request) {
+	jsonReply(w, 200, autostartState(func(service string) (string, error) {
+		out, err := exec.Command("systemctl", "is-enabled", service).CombinedOutput()
+		return string(out), err
+	}))
 }
 
 func (m *manager) startUpdate(w http.ResponseWriter, r *http.Request) {

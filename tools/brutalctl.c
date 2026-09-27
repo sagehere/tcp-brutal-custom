@@ -345,7 +345,7 @@ int main(int argc, char **argv)
 
         if (argc < 3 || argc > 15)
             return usage();
-        args[0] = "tcp-brutal-custom";
+        args[0] = "tbc";
         if (!strcmp(argv[2], "list"))
         {
             args[1] = "ports";
@@ -358,7 +358,7 @@ int main(int argc, char **argv)
             args[argc - 1] = NULL;
         }
         execvp(args[0], args);
-        perror("brutalctl: tcp-brutal-custom");
+        perror("brutalctl: tbc");
         return 1;
     }
     if (!strcmp(argv[1], "list") || !strcmp(argv[1], "ls"))

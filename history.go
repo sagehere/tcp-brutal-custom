@@ -18,6 +18,8 @@ type sample struct {
 	Sent       uint64 `json:"sent"`
 	Acked      uint64 `json:"acked"`
 	Retrans    uint64 `json:"retrans"`
+	Expected   uint64 `json:"expected_bytes"`
+	Actual     uint64 `json:"actual_bytes"`
 	Success    uint64 `json:"success"`
 	Failure    uint64 `json:"failure"`
 	Members    uint32 `json:"members"`
@@ -25,6 +27,13 @@ type sample struct {
 	RTTSamples uint64 `json:"rtt_samples"`
 	RTTMax     uint32 `json:"rtt_max_us"`
 	Gap        bool   `json:"gap"`
+}
+
+func sendBytes(sent, retrans uint64) (uint64, uint64) {
+	if retrans >= sent {
+		return 0, sent
+	}
+	return sent - retrans, sent
 }
 
 type event struct {
@@ -231,6 +240,7 @@ func (h *history) query(tier string, from, to int64, port uint16) ([]sample, err
 		if err := rows.Scan(&x.Time, &x.Port, &x.Group, &x.Sent, &x.Acked, &x.Retrans, &x.Success, &x.Failure, &x.Members, &x.RTTSum, &x.RTTSamples, &x.RTTMax, &x.Gap); err != nil {
 			return nil, err
 		}
+		x.Expected, x.Actual = sendBytes(x.Sent, x.Retrans)
 		out = append(out, x)
 	}
 	if err := rows.Err(); err != nil {

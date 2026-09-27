@@ -21,6 +21,21 @@ func TestPasswordHashMatchesLogin(t *testing.T) {
 	}
 }
 
+func TestPasswordMinimumUnicodeCharacters(t *testing.T) {
+	for _, password := range []string{"1234567", "中文中文中文中", "🦊🦊🦊🦊🦊🦊🦊"} {
+		var c config
+		if setPassword(&c, password) == nil {
+			t.Fatalf("accepted short password %q", password)
+		}
+	}
+	for _, password := range []string{"12345678", "中文中文中文中文文", "🦊🦊🦊🦊🦊🦊🦊🦊"} {
+		var c config
+		if err := setPassword(&c, password); err != nil {
+			t.Fatalf("rejected %q: %v", password, err)
+		}
+	}
+}
+
 func TestHistoryDeltasAndReset(t *testing.T) {
 	dir := t.TempDir()
 	h, err := openHistoryAt(dir)

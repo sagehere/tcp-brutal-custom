@@ -23,7 +23,7 @@ The main goal is simple: run a normal TCP service on a Debian/Ubuntu VPS and ena
 For example:
 
 ```bash
-sudo tcp-brutal-custom port add 443 100
+sudo tbc port add 443 100
 ```
 
 New TCP connections accepted on local port `443` will use Brutal automatically. All connections on that port share a **100 Mbps target effective rate** as one group.
@@ -138,13 +138,13 @@ After the first login, configure the allowed client IP list.
 
 The panel provides:
 
-- current managed ports and connection counts;
+- current managed ports, connection counts, and client IP addresses;
 - target rate and CWND gain;
-- sent / acknowledged / retransmitted traffic;
+- expected unique bytes / actual transmitted bytes (including retransmissions), plus acknowledged bytes;
 - retransmission ratio;
 - mean and maximum RTT;
 - historical charts and CSV/JSON export;
-- panel settings and password management;
+- panel settings, service autostart, and password management (minimum 8 Unicode characters);
 - release/update status; maintenance upgrades themselves require local root CLI.
 
 ## CLI usage
@@ -152,38 +152,38 @@ The panel provides:
 Open the interactive manager:
 
 ```bash
-sudo tcp-brutal-custom
+sudo tbc
 ```
 
 Common commands:
 
 ```bash
 # Overall status
-sudo tcp-brutal-custom status
+sudo tbc status
 
 # 443 shares a 100 Mbps target rate; default gain is 20 = 2.0x
-sudo tcp-brutal-custom port add 443 100
+sudo tbc port add 443 100
 
 # 443 shares 80 Mbps, CWND gain 15 = 1.5x
-sudo tcp-brutal-custom port add 443 80 gain=15
+sudo tbc port add 443 80 gain=15
 
 # List configured ports
-sudo tcp-brutal-custom ports
+sudo tbc ports
 
 # Remove the rule; existing connections keep running until they close
-sudo tcp-brutal-custom port del 443
+sudo tbc port del 443
 
 # Change panel listener / allow-list
-sudo tcp-brutal-custom panel 0.0.0.0 23334 203.0.113.5
+sudo tbc panel 0.0.0.0 23334 203.0.113.5
 
 # Disable service autostart
-sudo tcp-brutal-custom autostart off
+sudo tbc autostart off
 
 # Update from the latest release
-sudo tcp-brutal-custom update  # local root/SSH only
+sudo tbc update  # local root/SSH only
 
 # Uninstall
-sudo tcp-brutal-custom uninstall
+sudo tbc uninstall
 ```
 
 ## How port takeover works
@@ -264,7 +264,7 @@ When a connection matches both mechanisms, the local **port rule is applied firs
 ## Updates and maintenance
 
 ```bash
-sudo tcp-brutal-custom update
+sudo tbc update
 ```
 
 Authenticated Web sessions can check release information but cannot start an update. The disruptive maintenance operation is restricted to a local root caller on the manager Unix socket, for example through SSH.
@@ -289,7 +289,7 @@ Run updates during a maintenance window.
 Standard uninstall keeps configuration and history:
 
 ```bash
-sudo tcp-brutal-custom uninstall
+sudo tbc uninstall
 ```
 
 To remove persistent configuration and history as well:
@@ -310,7 +310,7 @@ make dkms-tarball
 Management program:
 
 ```bash
-go build -o tcp-brutal-custom .
+go build -o tbc .
 ```
 
 Upstream-compatible CLI:
