@@ -31,5 +31,18 @@ jobs:
       - name: Run Go tests
         run: CGO_ENABLED=0 go test ./...
 
+      - name: Verify make clean preserves go.mod
+        run: |
+          before=$(sha256sum go.mod | awk '{print $1}')
+          fake=$(mktemp -d)
+          cat >"$fake/Makefile" <<'EOF'
+          clean:
+          	rm -f "$(M)/go.mod"
+          EOF
+          make clean KERNEL_DIR="$fake"
+          after=$(sha256sum go.mod | awk '{print $1}')
+          test "$before" = "$after"
+          test ! -e .go.mod.kbuild-keep
+
       - name: Check shell syntax
         run: bash -n scripts/*.sh
