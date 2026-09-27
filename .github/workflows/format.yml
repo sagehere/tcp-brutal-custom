@@ -21,5 +21,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang-format-18
 
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.1'
+
       - name: Check C formatting
         run: make format-check
+
+      - name: Run Go tests
+        run: CGO_ENABLED=0 go test ./...
