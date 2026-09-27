@@ -28,7 +28,11 @@ all:
 	$(MAKE) -C $(KERNEL_DIR) M=$(PWD) $(KBUILD_LLVM) modules
 
 clean: clean-dkms.conf clean-dkms-tarball
-	$(MAKE) -C $(KERNEL_DIR) M=$(PWD) $(KBUILD_LLVM) clean
+	@set -e; \
+		keep=.go.mod.kbuild-keep; \
+		if [ -f go.mod ]; then mv go.mod $keep; trap 'mv -f "$keep" go.mod' EXIT HUP INT TERM; fi; \
+		$(MAKE) -C $(KERNEL_DIR) M=$(PWD) $(KBUILD_LLVM) clean; \
+		if [ -f "$keep" ]; then mv -f "$keep" go.mod; trap - EXIT HUP INT TERM; fi
 
 load:
 	sudo insmod brutal.ko
