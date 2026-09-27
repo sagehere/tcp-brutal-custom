@@ -244,7 +244,7 @@ static ssize_t brutal_rules_write(struct file *file, const char __user *ubuf, si
     char *buf, *args, *cmd;
     int ret;
 
-    if (len > RULES_MAX_CMD_LEN)
+    if (!len || len > RULES_MAX_CMD_LEN)
         return -EINVAL;
     buf = memdup_user_nul(ubuf, len);
     if (IS_ERR(buf))
@@ -277,7 +277,7 @@ int brutal_rules_init(void)
 {
     struct proc_dir_entry *dir = proc_mkdir("tcp_brutal", init_net.proc_net);
 
-    if (!dir || !proc_create("rules", 0644, dir, &brutal_rules_proc_ops) || brutal_ports_init(dir))
+    if (!dir || !proc_create("rules", 0600, dir, &brutal_rules_proc_ops) || brutal_ports_init(dir))
     {
         remove_proc_subtree("tcp_brutal", init_net.proc_net);
         return -ENOMEM;
