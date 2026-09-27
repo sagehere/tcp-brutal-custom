@@ -60,5 +60,4 @@ el('range').onchange=el('metricPort').onchange=el('metricKind').onchange=()=>dra
 async function download(format){try{const r=await api('/api/v1/metrics?'+metricParams()+'&format='+format);const blob=await r.blob(),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='brutal-history.'+format;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);}catch(x){say(x.message);}}
 el('exportCSV').onclick=()=>download('csv');el('exportJSON').onclick=()=>download('json');
 el('checkUpdate').onclick=async()=>{try{const x=await(await api('/api/v1/update/check')).json();el('releaseNotes').textContent=`当前 ${x.installed}；最新 ${x.latest}\n${x.notes}`;}catch(x){say(x.message);}};
-el('update').onclick=async()=>{if(!confirm('维护升级会中断受管 TCP 连接。现在开始？'))return;try{const r=await api('/api/v1/update','POST',{});const x=await r.json();say('升级任务 '+x.job_id+' 已启动');}catch(x){say(x.message);}};
 if(csrf)refresh().catch(()=>{csrf='';sessionStorage.removeItem('csrf');});

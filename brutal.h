@@ -12,7 +12,7 @@
 
 #define BRUTAL_VERSION_MAJOR 2
 #define BRUTAL_VERSION_MINOR 1
-#define BRUTAL_VERSION_PATCH 1
+#define BRUTAL_VERSION_PATCH 2
 #define BRUTAL_VERSION ((BRUTAL_VERSION_MAJOR << 16) | (BRUTAL_VERSION_MINOR << 8) | BRUTAL_VERSION_PATCH)
 
 #define TCP_BRUTAL_PARAMS 23301  // setsockopt/getsockopt: struct brutal_params
@@ -22,7 +22,7 @@
 #define INIT_CWND_GAIN 20
 
 #define MIN_PACING_RATE 62500           // 500 Kbps
-#define MAX_PACING_RATE 125000000000ULL // 1 Tbps; keeps all the u64 arithmetic in range
+#define MAX_PACING_RATE 125000000000ULL // 1 Tbps administrative ceiling
 #define MIN_CWND_GAIN 5
 #define MAX_CWND_GAIN 80
 #define MIN_CWND 4

@@ -22,11 +22,11 @@ The main goal is simple: run a normal TCP service on a Debian/Ubuntu VPS and ena
 
 For example:
 
-\`\`\`bash
+```bash
 sudo tcp-brutal-custom port add 443 100
-\`\`\`
+```
 
-New TCP connections accepted on local port \`443\` will use Brutal automatically. All connections on that port share a **100 Mbps target effective rate** as one group.
+New TCP connections accepted on local port `443` will use Brutal automatically. All connections on that port share a **100 Mbps target effective rate** as one group.
 
 This is not 100 Mbps per connection:
 
@@ -41,7 +41,7 @@ IPv4 and IPv6 connections on the same local port use the same group.
 
 - **Transparent port takeover** — select Brutal by local TCP server port; no application patching is required.
 - **Shared-rate groups** — all managed connections on one port share one target rate instead of multiplying the rate per connection.
-- **eBPF SockOps selector** — switches eligible passive TCP connections to the \`brutal\` congestion-control algorithm at connection establishment.
+- **eBPF SockOps selector** — switches eligible passive TCP connections to the `brutal` congestion-control algorithm at connection establishment.
 - **Web management panel** — manage ports, rates, CWND gain, access control, updates and history.
 - **CLI management** — add/remove ports, inspect status, change panel settings, update or uninstall from SSH.
 - **Traffic history** — sent, acknowledged and retransmitted bytes plus RTT statistics, stored in SQLite.
@@ -63,34 +63,55 @@ Supported installation targets:
 
 The kernel module and eBPF selector interact with kernel internals. A successful build alone does not prove that takeover works on every kernel variant; validate on the actual target kernel before relying on it in production.
 
-## Quick install
+## Verified install
 
-\`\`\`bash
-curl -fsSL https://raw.githubusercontent.com/sagehere/tcp-brutal-custom/main/scripts/install.sh -o /tmp/tcp-brutal-custom-install.sh
+Releases use an offline Ed25519 signing key. The private key is not stored in GitHub or GitHub Actions.
+
+Before a first install, obtain `keys/release-signing-pub.pem` and verify this SHA-256 fingerprint through a channel you trust independently of this GitHub repository:
+
+```text
+b1a16baa2d9c68fdff5594e1261e0668f45b65253bf454b7c27025265b99bc1d
+```
+
+Then verify the release before running anything as root:
+
+```bash
+base=https://github.com/sagehere/tcp-brutal-custom/releases/latest/download
+curl -fsSL "$base/hashes.txt" -o /tmp/hashes.txt
+curl -fsSL "$base/hashes.txt.sig" -o /tmp/hashes.txt.sig
+curl -fsSL "$base/install.sh" -o /tmp/tcp-brutal-custom-install.sh
+
+openssl pkeyutl -verify -rawin -pubin \
+  -inkey keys/release-signing-pub.pem \
+  -sigfile /tmp/hashes.txt.sig \
+  -in /tmp/hashes.txt
+
+grep ' install.sh$' /tmp/hashes.txt >/tmp/install.check
+(cd /tmp && sha256sum -c install.check)
 sudo bash /tmp/tcp-brutal-custom-install.sh
-\`\`\`
+```
 
-The installer downloads release assets, verifies SHA-256 hashes, installs the DKMS module and management program, and creates the required systemd services.
+The installer repeats signature verification for the signed manifest and SHA-256 verification for every downloaded artifact. After installation, the trusted public key is pinned locally and normal updates never replace it.
 
-On first install, a random administrator password is printed.
+On first install, a random administrator password is printed. See [TRUST.md](TRUST.md) for the trust model and key fingerprint.
 
 Default locations:
 
 | Item | Path |
 | --- | --- |
-| Configuration | \`/etc/tcp-brutal-custom/config.json\` |
-| History database | \`/var/lib/tcp-brutal-custom/history.db\` |
-| Manager socket | \`/run/tcp-brutal-custom/manager.sock\` |
-| Port rules | \`/proc/net/tcp_brutal/ports\` |
-| Destination rules | \`/proc/net/tcp_brutal/rules\` |
+| Configuration | `/etc/tcp-brutal-custom/config.json` |
+| History database | `/var/lib/tcp-brutal-custom/history.db` |
+| Manager socket | `/run/tcp-brutal-custom/manager.sock` |
+| Port rules | `/proc/net/tcp_brutal/ports` |
+| Destination rules | `/proc/net/tcp_brutal/rules` |
 
 ## Web panel
 
 The panel listens on:
 
-\`\`\`text
+```text
 http://SERVER_IP:23333
-\`\`\`
+```
 
 After the first login, configure the allowed client IP list.
 
@@ -105,19 +126,19 @@ The panel provides:
 - mean and maximum RTT;
 - historical charts and CSV/JSON export;
 - panel settings and password management;
-- update controls.
+- release/update status; maintenance upgrades themselves require local root CLI.
 
 ## CLI usage
 
 Open the interactive manager:
 
-\`\`\`bash
+```bash
 sudo tcp-brutal-custom
-\`\`\`
+```
 
 Common commands:
 
-\`\`\`bash
+```bash
 # Overall status
 sudo tcp-brutal-custom status
 
@@ -140,15 +161,15 @@ sudo tcp-brutal-custom panel 0.0.0.0 23334 203.0.113.5
 sudo tcp-brutal-custom autostart off
 
 # Update from the latest release
-sudo tcp-brutal-custom update
+sudo tcp-brutal-custom update  # local root/SSH only
 
 # Uninstall
 sudo tcp-brutal-custom uninstall
-\`\`\`
+```
 
 ## How port takeover works
 
-\`\`\`text
+```text
 Incoming TCP connection
         │
         ▼
@@ -169,9 +190,9 @@ cgroup v2 SockOps eBPF program
                   │
                   ▼
        Brutal pacing / loss compensation
-\`\`\`
+```
 
-The selector runs on the passive-established SockOps event. If the local port is enabled, it switches the socket to \`brutal\`. When Brutal initializes, the module looks up the local port and joins the socket to that port's shared group.
+The selector runs on the passive-established SockOps event. If the local port is enabled, it switches the socket to `brutal`. When Brutal initializes, the module looks up the local port and joins the socket to that port's shared group.
 
 Port rules have priority over upstream destination-IP rules.
 
@@ -211,11 +232,11 @@ The original TCP Brutal v2 destination-rule interface is still retained.
 
 Example:
 
-\`\`\`bash
+```bash
 sudo brutalctl add 203.0.113.5/32 100
 sudo brutalctl list
 sudo brutalctl del 203.0.113.5/32
-\`\`\`
+```
 
 Destination rules group connections by remote prefix. For full details, see the [upstream TCP Brutal documentation](https://github.com/HyNetworks/tcp-brutal).
 
@@ -223,17 +244,22 @@ When a connection matches both mechanisms, the local **port rule is applied firs
 
 ## Updates and maintenance
 
-\`\`\`bash
+```bash
 sudo tcp-brutal-custom update
-\`\`\`
+```
 
-The update flow stages the new version, then enters a maintenance switch:
+Authenticated Web sessions can check release information but cannot start an update. The disruptive maintenance operation is restricted to a local root caller on the manager Unix socket, for example through SSH.
 
-1. stop the management services;
-2. disconnect TCP connections on managed ports;
-3. unload the current \`brutal\` module;
-4. install/switch the DKMS module and binaries;
-5. load the new module and restart services.
+Before any service is stopped, the updater verifies the offline Ed25519 signature on `hashes.txt` and then verifies every downloaded artifact against that signed manifest. Missing or invalid signatures fail closed.
+
+After verification, the update flow:
+
+1. stages the new version;
+2. stops the management services;
+3. disconnects TCP connections on managed ports;
+4. unloads the current `brutal` module;
+5. installs/switches the DKMS module and binaries;
+6. loads the new module and restarts services.
 
 If the module is still busy, the switch is aborted. If switching fails after changes begin, the installer attempts to restore the previous module and program.
 
@@ -243,59 +269,59 @@ Run updates during a maintenance window.
 
 Standard uninstall keeps configuration and history:
 
-\`\`\`bash
+```bash
 sudo tcp-brutal-custom uninstall
-\`\`\`
+```
 
 To remove persistent configuration and history as well:
 
-\`\`\`bash
+```bash
 sudo /usr/local/lib/tcp-brutal-custom/install.sh --uninstall --purge
-\`\`\`
+```
 
 ## Build from source
 
 Kernel module / DKMS source package:
 
-\`\`\`bash
+```bash
 make
 make dkms-tarball
-\`\`\`
+```
 
 Management program:
 
-\`\`\`bash
+```bash
 go build -o tcp-brutal-custom .
-\`\`\`
+```
 
 Upstream-compatible CLI:
 
-\`\`\`bash
+```bash
 make -C tools
-\`\`\`
+```
 
 Useful checks:
 
-\`\`\`bash
+```bash
 make format-check
 CGO_ENABLED=0 go test ./...
-\`\`\`
+```
 
 ## Repository layout
 
 | Path | Purpose |
 | --- | --- |
-| \`brutal_cc.c\` | Brutal congestion control, pacing and group scheduling |
-| \`brutal_ports.c\` | Local TCP port → Brutal group rules |
-| \`brutal_rules.c\` | Upstream destination-prefix rules |
-| \`brutal_sockopt.c\` | Brutal socket options and application groups |
-| \`selector_linux.go\` | cgroup SockOps eBPF port selector |
-| \`manager.go\` | Root manager, API, port control and statistics |
-| \`main.go\` | CLI, configuration and service modes |
-| \`history.go\` | SQLite history, aggregation and retention |
-| \`web/\` | Embedded management panel |
-| \`scripts/install.sh\` | Install, update, rollback and uninstall flow |
-| \`tools/brutalctl.c\` | Upstream-compatible \`brutalctl\` CLI |
+| `brutal_cc.c` | Brutal congestion control, pacing and group scheduling |
+| `brutal_ports.c` | Local TCP port → Brutal group rules |
+| `brutal_rules.c` | Upstream destination-prefix rules |
+| `brutal_sockopt.c` | Brutal socket options and application groups |
+| `selector_linux.go` | cgroup SockOps eBPF port selector |
+| `manager.go` | Root manager, API, port control and statistics |
+| `main.go` | CLI, configuration and service modes |
+| `history.go` | SQLite history, aggregation and retention |
+| `web/` | Embedded management panel |
+| `scripts/install.sh` | Install, update, rollback and uninstall flow |
+| `tools/brutalctl.c` | Upstream-compatible `brutalctl` CLI |
 
 ## Relationship to upstream
 
@@ -312,7 +338,24 @@ The custom additions in this repository focus on operational deployment:
 
 For a more detailed Chinese operational guide, see [CUSTOM.zh.md](CUSTOM.zh.md).
 
+## Release signing
+
+GitHub Actions builds an **unsigned release bundle** and uploads it as a workflow artifact. It no longer publishes trusted releases directly.
+
+A release must be signed outside GitHub with the offline Ed25519 private key:
+
+```bash
+bash scripts/sign-release.sh /path/to/release-signing-key.pem build
+bash scripts/publish-release.sh vX.Y.Z /path/to/release-signing-key.pem build
+```
+
+Installers reject releases without a valid `hashes.txt.sig`. Existing systems pin the release public key locally; ordinary updates cannot silently replace the trust root. Key rotation therefore requires an explicit migration.
+
+See [TRUST.md](TRUST.md).
+
 ## License
+
+
 
 GPL-3.0. See [LICENSE](LICENSE).
 

@@ -1,11 +1,11 @@
-name: Release TCP Brutal Custom
+name: Build TCP Brutal Custom release assets
 
 on:
   push:
     tags: ["v*.*.*"]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   release:
@@ -31,6 +31,9 @@ jobs:
           cp scripts/install.sh build/install.sh
           cd build
           sha256sum tcp-brutal-custom-linux-amd64 tcp-brutal-custom-linux-arm64 tcp-brutal-custom.dkms.tar.gz install.sh > hashes.txt
-      - uses: softprops/action-gh-release@v2
+      - name: Upload unsigned release bundle
+        uses: actions/upload-artifact@v4
         with:
-          files: build/*
+          name: release-${{ github.ref_name }}
+          path: build/*
+          if-no-files-found: error

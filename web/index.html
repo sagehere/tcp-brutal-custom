@@ -19,7 +19,7 @@
   </section>
   <section class="card"><h2>历史统计</h2><label>端口 <select id="metricPort"><option value="0">全部</option></select></label><label>范围 <select id="range"><option value="86400">24 小时</option><option value="604800">7 天</option><option value="7776000">90 天</option><option value="31536000">1 年</option></select></label><label>指标 <select id="metricKind"><option value="sent">发送量</option><option value="retrans">重传率</option><option value="rtt">RTT</option></select></label><button id="exportCSV">导出 CSV</button><button id="exportJSON">导出 JSON</button><svg id="chart" role="img" aria-label="历史趋势图" viewBox="0 0 800 220"><polyline id="line" fill="none" stroke="#62b0ff" stroke-width="3" points=""></polyline></svg><p id="chartNote"></p></section>
   <section class="card"><h2>面板设置</h2><form id="settingsForm"><label>监听 IP <input id="host" required></label><label>端口 <input id="webPort" type="number" min="1" max="65535" required></label><label>允许访问的 IP（逗号分隔；留空表示不限） <input id="allowIPs"></label><button>保存（需重启 Web 服务）</button></form><form id="changePassword"><label>新密码（至少 16 字符） <input id="newPassword" type="password" minlength="16" required></label><button>修改密码</button></form></section>
-  <section class="card"><h2>维护</h2><button id="checkUpdate">检查更新</button><button id="update">启动维护升级</button><p id="releaseNotes"></p><p id="job"></p><p>更新会中断受管连接；请在维护窗口使用。</p></section>
+  <section class="card"><h2>维护</h2><button id="checkUpdate">检查更新</button><p id="releaseNotes"></p><p id="job"></p><p>维护升级会断开受管连接并替换内核模块，因此只能通过本机 root CLI 执行：<code>sudo tcp-brutal-custom update</code>。</p></section>
 </main>
 <script src="/app.js" defer></script>
 </html>
