@@ -726,6 +726,13 @@ func (m *manager) autostart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *manager) startUpdate(w http.ResponseWriter, r *http.Request) {
+	// Maintenance update disconnects managed TCP sessions and replaces a kernel
+	// module. Keep that high-impact action local to a root caller on the Unix
+	// socket; authenticated Web sessions may only check for updates.
+	if r.Context().Value(peerKey{}) != uint32(0) {
+		bad(w, 403, errors.New("maintenance update requires local root CLI"))
+		return
+	}
 	m.mu.Lock()
 	if m.job.State == "running" || exec.Command("systemctl", "is-active", "--quiet", "tcp-brutal-custom-update.service").Run() == nil {
 		m.mu.Unlock()
