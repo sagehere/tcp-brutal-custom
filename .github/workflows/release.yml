@@ -20,7 +20,7 @@ jobs:
           version=$(./scripts/mkdkmsconf.sh | sed -n 's/^PACKAGE_VERSION="\(.*\)"$/\1/p')
           test "v$version" = "$GITHUB_REF_NAME"
       - name: Check Go code
-        run: go test ./...
+        run: CGO_ENABLED=0 go test ./...
       - name: Package binaries and DKMS source
         run: |
           mkdir -p build
