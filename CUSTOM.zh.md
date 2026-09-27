@@ -17,17 +17,17 @@ Release 使用离线 Ed25519 私钥签名。首次安装不再推荐直接执行
 ## 管理
 
 ```bash
-sudo tbc                     # 交互菜单
-sudo tbc status              # 模块、规则、BPF、升级状态
-sudo tbc port add 443 100    # 443 端口共享 100 Mbps，gain 默认 20=2.0
-sudo tbc port add 443 80 gain=15
-sudo tbc port del 443
-sudo tbc ports
-sudo tbc panel 0.0.0.0 23334 203.0.113.5
+sudo tbc2                     # 交互菜单
+sudo tbc2 status              # 模块、规则、BPF、升级状态
+sudo tbc2 port add 443 100    # 443 端口共享 100 Mbps，gain 默认 20=2.0
+sudo tbc2 port add 443 80 gain=15
+sudo tbc2 port del 443
+sudo tbc2 ports
+sudo tbc2 panel 0.0.0.0 23334 203.0.113.5
 sudo systemctl restart tcp-brutal-custom-web
-sudo tbc autostart off
-sudo tbc update              # 仅本机 root/SSH 可触发
-sudo tbc uninstall
+sudo tbc2 autostart off
+sudo tbc2 update              # 仅本机 root/SSH 可触发
+sudo tbc2 uninstall
 ```
 
 Web 面板可以检查是否存在新版本和查看发布说明，但不能触发维护升级。原因是升级过程会断开受管连接并替换内核模块，属于高影响操作。
@@ -59,7 +59,7 @@ bash scripts/publish-release.sh vX.Y.Z /path/to/release-signing-key.pem build
 
 ```bash
 make dkms-tarball
-go build -o tbc .
+go build -o tbc2 .
 ```
 
 模块名和拥塞控制算法名仍为 `brutal`。目标 IP 规则原始接口由上游文档说明。内核模块和 BPF 程序需在实际目标内核上验证；仅编译通过不能证明接管成功。
