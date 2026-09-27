@@ -44,5 +44,14 @@ jobs:
           test "$before" = "$after"
           test ! -e .go.mod.kbuild-keep
 
+      - name: Check DKMS package layout
+        run: |
+          PACKAGE_VERSION=0.0.0 make dkms-tarball
+          tar tzf dkms.tar.gz | grep -Fx 'dkms_source_tree/dkms.conf'
+          tmp=$(mktemp -d)
+          tar xzf dkms.tar.gz -C "$tmp" --strip-components=1
+          test -f "$tmp/dkms.conf"
+          test -f "$tmp/Makefile"
+
       - name: Check shell syntax
         run: bash -n scripts/*.sh
