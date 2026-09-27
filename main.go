@@ -321,7 +321,7 @@ func runCLI(args []string) error {
 			return localRequest("PUT", "/api/v1/autostart", strings.NewReader(string(b)))
 		}
 	}
-	return errors.New("usage: tbc [manager|web|init [panel-port]|status|ports|port add PORT Mbps [gain=20]|port del PORT|password NEW|update|autostart on|autostart off]")
+	return errors.New("usage: tbc2 [manager|web|init [panel-port]|status|ports|port add PORT Mbps [gain=20]|port del PORT|password NEW|update|autostart on|autostart off]")
 }
 
 func menu() error {
