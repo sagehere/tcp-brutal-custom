@@ -15,12 +15,12 @@ config='/etc/tcp-brutal-custom/config.json'
 data='/var/lib/tcp-brutal-custom'
 mode="${1:-install}"
 release_key="$library/release-signing-pub.pem"
-release_key_fingerprint='b1a16baa2d9c68fdff5594e1261e0668f45b65253bf454b7c27025265b99bc1d'
+release_key_fingerprint='249a5abded1a497f8fe67f4cf5cd8e47d127b9cee2d9b1eac23042b7edfeceff'
 
 write_embedded_release_key() {
   cat >"$1" <<'EOF'
 -----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEA32QwT1Z9jNobN7jIIlY2KZazDgzidVQOx3/dOLp0AIs=
+MCowBQYDK2VwAyEAaop0CqyMxEmosNEtgEWgidNFVh/xaIE4uzAJDqfCqeA=
 -----END PUBLIC KEY-----
 EOF
 }
