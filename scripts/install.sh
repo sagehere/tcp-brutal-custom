@@ -8,8 +8,9 @@ name='tcp-brutal-custom'
 module='brutal'
 module_version=''
 library='/usr/local/lib/tcp-brutal-custom'
-binary='/usr/local/bin/tbc'
+binary='/usr/local/bin/tbc2'
 legacy_binary='/usr/local/bin/tcp-brutal-custom'
+old_short_binary='/usr/local/bin/tbc'
 config='/etc/tcp-brutal-custom/config.json'
 data='/var/lib/tcp-brutal-custom'
 mode="${1:-install}"
@@ -63,7 +64,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStartPre=/sbin/modprobe brutal
-ExecStart=/usr/local/bin/tbc manager
+ExecStart=/usr/local/bin/tbc2 manager
 Restart=on-failure
 RestartSec=2
 
@@ -80,7 +81,7 @@ Requires=tcp-brutal-custom-manager.service
 Type=simple
 User=tcpbrutal
 Group=tcpbrutal
-ExecStart=/usr/local/bin/tbc web
+ExecStart=/usr/local/bin/tbc2 web
 Restart=on-failure
 RestartSec=2
 NoNewPrivileges=yes
@@ -130,7 +131,7 @@ uninstall() {
   dkms status -m "$name" 2>/dev/null | awk -F'[/, ]+' '{print $2}' | sort -u | while read -r version; do
     [[ -n "$version" ]] && dkms remove "$name/$version" --all || true
   done
-  rm -f "$binary" "$legacy_binary" /usr/local/bin/brutalctl
+  rm -f "$binary" "$old_short_binary" "$legacy_binary" /usr/local/bin/brutalctl
   rm -f /etc/systemd/system/tcp-brutal-custom-{manager,web,update}.service
   rm -rf "$library"
   for source in /usr/src/$name-*; do [[ -d "$source" ]] && rm -rf "$source"; done
@@ -307,7 +308,7 @@ write_units
 modprobe brutal
 if [[ "$mode" == 'install' ]]; then systemctl enable tcp-brutal-custom-manager.service tcp-brutal-custom-web.service; fi
 systemctl start tcp-brutal-custom-manager.service tcp-brutal-custom-web.service
-rm -f "$legacy_binary"
+rm -f "$old_short_binary" "$legacy_binary"
 trap - ERR
 record_status complete 'active'
 panel_port=$(sed -n 's/.*"web_port": \([0-9]*\).*/\1/p' "$config" | head -1)
