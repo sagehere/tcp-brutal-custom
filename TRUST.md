@@ -5,7 +5,7 @@ TCP Brutal Custom release manifests are signed with an offline Ed25519 key.
 Public-key fingerprint (SHA-256 of DER SubjectPublicKeyInfo):
 
 ```text
-b1a16baa2d9c68fdff5594e1261e0668f45b65253bf454b7c27025265b99bc1d
+249a5abded1a497f8fe67f4cf5cd8e47d127b9cee2d9b1eac23042b7edfeceff
 ```
 
 The private key is intentionally **not** stored in this repository or in GitHub Actions secrets.
@@ -34,3 +34,22 @@ This improves usability without weakening Release verification, but it does **no
 Systems installed before signed-manifest verification was introduced still have an older updater that trusts GitHub Release plus SHA-256 only. Their **first** move to a signed release cannot be retroactively protected by the new verifier.
 
 For security-sensitive hosts, perform that migration manually: independently verify the public-key fingerprint, verify the signed release manifest and installer as described in the README, and then run the verified installer. After that migration, subsequent updates use the locally pinned key and fail closed on missing or invalid signatures.
+
+
+## Key rotation on 2026-09-28
+
+The original offline Ed25519 private key was lost. Its public-key fingerprint was:
+
+```text
+b1a16baa2d9c68fdff5594e1261e0668f45b65253bf454b7c27025265b99bc1d
+```
+
+It has been replaced with a new offline Ed25519 key whose fingerprint is:
+
+```text
+249a5abded1a497f8fe67f4cf5cd8e47d127b9cee2d9b1eac23042b7edfeceff
+```
+
+Because the old private key is unavailable, the rotation cannot be cryptographically authorized by the old key. Existing installations that pinned the old key must perform an explicit administrator-approved trust migration before they can accept releases signed by the new key.
+
+Use `scripts/migrate-release-key.sh` only after independently verifying the new fingerprint above.

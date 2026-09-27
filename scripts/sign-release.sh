@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 key="${1:-}"
 dir="${2:-build}"
-expected='b1a16baa2d9c68fdff5594e1261e0668f45b65253bf454b7c27025265b99bc1d'
+expected='249a5abded1a497f8fe67f4cf5cd8e47d127b9cee2d9b1eac23042b7edfeceff'
 
 [[ -n "$key" && -f "$key" ]] || { echo "Usage: bash scripts/sign-release.sh PRIVATE_KEY [BUILD_DIR]" >&2; exit 2; }
 [[ -f "$dir/hashes.txt" ]] || { echo "Missing $dir/hashes.txt" >&2; exit 1; }

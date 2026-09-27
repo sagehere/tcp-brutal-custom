@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 repo='https://github.com/sagehere/tcp-brutal-custom'
 tag="${TCP_BRUTAL_RELEASE_TAG:-latest}"
-fingerprint='b1a16baa2d9c68fdff5594e1261e0668f45b65253bf454b7c27025265b99bc1d'
+fingerprint='249a5abded1a497f8fe67f4cf5cd8e47d127b9cee2d9b1eac23042b7edfeceff'
 
 if (( EUID != 0 )); then
   echo 'Run as root (for example: curl ... | sudo bash)' >&2
@@ -40,7 +40,7 @@ trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 
 cat >"$tmp/release-signing-pub.pem" <<'EOF'
 -----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEA32QwT1Z9jNobN7jIIlY2KZazDgzidVQOx3/dOLp0AIs=
+MCowBQYDK2VwAyEAaop0CqyMxEmosNEtgEWgidNFVh/xaIE4uzAJDqfCqeA=
 -----END PUBLIC KEY-----
 EOF
 

@@ -101,7 +101,7 @@ Release 使用独立的 Ed25519 离线签名密钥，私钥**不存放在 GitHub
 首次安装前，请先取得 `keys/release-signing-pub.pem`，并通过**独立于本 GitHub 仓库的可信渠道**核对以下 SHA-256 公钥指纹：
 
 ```text
-b1a16baa2d9c68fdff5594e1261e0668f45b65253bf454b7c27025265b99bc1d
+249a5abded1a497f8fe67f4cf5cd8e47d127b9cee2d9b1eac23042b7edfeceff
 ```
 
 确认信任根后，再在给予 root 权限之前验证 Release：
@@ -477,7 +477,7 @@ bash scripts/sign-release.sh /path/to/release-signing-key.pem build
 bash scripts/publish-release.sh vX.Y.Z /path/to/release-signing-key.pem build
 ```
 
-安装器和更新器要求 Release 中存在有效的 `hashes.txt.sig`。已安装机器会固定保存可信公钥，普通更新不能静默替换信任根；密钥轮换必须走显式迁移流程。
+安装器和更新器要求 Release 中存在有效的 `hashes.txt.sig`。已安装机器会固定保存可信公钥，普通更新不能静默替换信任根；密钥轮换必须走显式迁移流程。2026-09-28 因原离线私钥遗失已完成一次正式轮换；已有安装必须先执行显式迁移脚本，再继续更新。
 
 详细说明见 [TRUST.md](TRUST.md)。
 
