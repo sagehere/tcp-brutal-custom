@@ -1,0 +1,89 @@
+name: Publish signed TCP Brutal Custom release
+
+on:
+  push:
+    branches: ["release-publish/v*.*.*"]
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read publication request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          file=.release/publish.env
+          test -f "$file"
+          tag=$(sed -n 's/^TAG=//p' "$file")
+          source_sha=$(sed -n 's/^SOURCE_SHA=//p' "$file")
+          artifact_id=$(sed -n 's/^ARTIFACT_ID=//p' "$file")
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$artifact_id" =~ ^[0-9]+$ ]]
+          test "$GITHUB_REF_NAME" = "release-publish/$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "artifact_id=$artifact_id" >> "$GITHUB_OUTPUT"
+
+      - name: Download staged bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bundle
+          gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts/${{ steps.request.outputs.artifact_id }}/zip" > /tmp/release.zip
+          unzip -q /tmp/release.zip -d bundle
+
+      - name: Verify offline signature and staged artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d .release/hashes.txt.sig.b64 > bundle/hashes.txt.sig
+          cmp -s .release/hashes.txt bundle/hashes.txt
+          openssl pkeyutl -verify -rawin -pubin \
+            -inkey keys/release-signing-pub.pem \
+            -sigfile bundle/hashes.txt.sig \
+            -in bundle/hashes.txt
+          (cd bundle && sha256sum -c hashes.txt)
+          grep -Fx "tag=${{ steps.request.outputs.tag }}" bundle/release.txt
+          grep -Fx "source_sha=${{ steps.request.outputs.source_sha }}" bundle/release.txt
+          git cat-file -e "${{ steps.request.outputs.source_sha }}^{commit}"
+
+      - name: Create tag and signed release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ steps.request.outputs.tag }}"
+          source_sha="${{ steps.request.outputs.source_sha }}"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "Tag $tag already exists" >&2
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" "$source_sha" -m "TCP Brutal Custom $tag"
+          git push origin "refs/tags/$tag"
+          gh release create "$tag" \
+            bundle/tcp-brutal-custom-linux-amd64 \
+            bundle/tcp-brutal-custom-linux-arm64 \
+            bundle/tcp-brutal-custom.dkms.tar.gz \
+            bundle/install.sh \
+            bundle/bootstrap.sh \
+            bundle/release.txt \
+            bundle/hashes.txt \
+            bundle/hashes.txt.sig \
+            --verify-tag \
+            --title "$tag" \
+            --generate-notes
