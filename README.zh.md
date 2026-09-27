@@ -68,6 +68,32 @@ sudo tcp-brutal-custom port add 443 100
 
 本项目同时涉及 Linux 内核模块和 eBPF。**仅仅编译成功，不代表所有内核版本都一定能正确完成端口接管。** 在正式依赖之前，应在实际目标内核上验证。
 
+## 一键安装
+
+普通用户推荐直接使用：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sagehere/tcp-brutal-custom/main/scripts/bootstrap.sh | sudo bash
+```
+
+这条命令并不是把 Release 里的安装器直接交给 root 执行。引导脚本会先：
+
+1. 使用内置的 Ed25519 发布公钥；
+2. 核对固定公钥指纹；
+3. 验证 `hashes.txt.sig`；
+4. 从已签名的 `hashes.txt` 校验 `install.sh` 的 SHA-256；
+5. 全部通过后才执行安装器；
+6. 安装器内部再对签名清单和下载产物进行第二次验证。
+
+如需固定安装某个已签名版本：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sagehere/tcp-brutal-custom/main/scripts/bootstrap.sh | \
+  sudo env TCP_BRUTAL_RELEASE_TAG=v2.1.2 bash
+```
+
+> **首次安装的信任边界：** `bootstrap.sh` 本身仍来自本 GitHub 仓库。如果你的威胁模型包含“首次安装前整个 GitHub 仓库/账号已经被接管”，仍应通过独立可信渠道核对下方公钥指纹后再授予 root 权限。安装成功后公钥会固定在本机，后续普通更新不会重新从 GitHub 建立信任根。
+
 ## 验签安装
 
 Release 使用独立的 Ed25519 离线签名密钥，私钥**不存放在 GitHub，也不放入 GitHub Actions Secret**。
@@ -442,7 +468,7 @@ CGO_ENABLED=0 go test ./...
 
 ## Release 签名与供应链
 
-GitHub Actions 现在只负责构建**未签名的待发布产物**并上传为 workflow artifact，不再直接发布可信 Release。
+GitHub Actions 会先构建**未签名的待发布产物**并上传为 workflow artifact。私钥始终留在 GitHub 之外；对 `hashes.txt` 完成离线签名后，独立的发布 workflow 只接收公开签名，重新核对 staged artifact 的字节和签名，验证通过后才创建 tag 和 Release。
 
 正式发布必须在 GitHub 之外使用离线 Ed25519 私钥签名：
 
