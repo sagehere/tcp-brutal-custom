@@ -24,13 +24,13 @@
 
 例如：
 
-\`\`\`bash
+```bash
 sudo tcp-brutal-custom port add 443 100
-\`\`\`
+```
 
 之后，新建立到本机 TCP 443 端口的连接会自动切换为 Brutal。
 
-这里的 \`100\` 表示该端口所有连接共同共享的 **100 Mbps 目标有效速率**。
+这里的 `100` 表示该端口所有连接共同共享的 **100 Mbps 目标有效速率**。
 
 这并不是每条连接各 100 Mbps：
 
@@ -45,7 +45,7 @@ sudo tcp-brutal-custom port add 443 100
 
 - **按本地端口透明接管**：无需修改 Nginx、代理、SSH 或其他 TCP 应用。
 - **端口级共享速率**：同一端口的所有受管连接共享一个总目标速率，不会按连接数量倍增。
-- **eBPF SockOps 自动选择**：在被动连接建立时，根据本机端口自动切换到 \`brutal\` 拥塞控制。
+- **eBPF SockOps 自动选择**：在被动连接建立时，根据本机端口自动切换到 `brutal` 拥塞控制。
 - **Web 管理面板**：管理端口、速率、CWND 增益、访问白名单、历史记录和更新。
 - **SSH / CLI 管理**：添加/删除端口、查看状态、修改面板、更新、卸载。
 - **历史统计**：记录发送、确认、重传流量及 RTT，使用 SQLite 保存。
@@ -68,40 +68,55 @@ sudo tcp-brutal-custom port add 443 100
 
 本项目同时涉及 Linux 内核模块和 eBPF。**仅仅编译成功，不代表所有内核版本都一定能正确完成端口接管。** 在正式依赖之前，应在实际目标内核上验证。
 
-## 一键安装
+## 验签安装
 
-\`\`\`bash
-curl -fsSL https://raw.githubusercontent.com/sagehere/tcp-brutal-custom/main/scripts/install.sh -o /tmp/tcp-brutal-custom-install.sh
+Release 使用独立的 Ed25519 离线签名密钥，私钥**不存放在 GitHub，也不放入 GitHub Actions Secret**。
+
+首次安装前，请先取得 `keys/release-signing-pub.pem`，并通过**独立于本 GitHub 仓库的可信渠道**核对以下 SHA-256 公钥指纹：
+
+```text
+b1a16baa2d9c68fdff5594e1261e0668f45b65253bf454b7c27025265b99bc1d
+```
+
+确认信任根后，再在给予 root 权限之前验证 Release：
+
+```bash
+base=https://github.com/sagehere/tcp-brutal-custom/releases/latest/download
+curl -fsSL "$base/hashes.txt" -o /tmp/hashes.txt
+curl -fsSL "$base/hashes.txt.sig" -o /tmp/hashes.txt.sig
+curl -fsSL "$base/install.sh" -o /tmp/tcp-brutal-custom-install.sh
+
+openssl pkeyutl -verify -rawin -pubin \
+  -inkey keys/release-signing-pub.pem \
+  -sigfile /tmp/hashes.txt.sig \
+  -in /tmp/hashes.txt
+
+grep ' install.sh$' /tmp/hashes.txt >/tmp/install.check
+(cd /tmp && sha256sum -c install.check)
 sudo bash /tmp/tcp-brutal-custom-install.sh
-\`\`\`
+```
 
-安装器会：
+安装器内部还会再次验证 `hashes.txt.sig`，并对所有下载产物做 SHA-256 校验。安装成功后，可信发布公钥会固定保存在本机；普通在线更新不会从 GitHub 自动替换该信任根。
 
-1. 从 GitHub Release 下载程序和 DKMS 源码；
-2. 校验 SHA-256；
-3. 安装内核模块；
-4. 安装管理程序；
-5. 创建并启用对应 systemd 服务。
-
-首次安装完成后，会输出随机管理员密码。
+首次安装完成后会输出随机管理员密码。详细信任模型见 [TRUST.md](TRUST.md)。
 
 默认文件位置：
 
 | 项目 | 路径 |
 | --- | --- |
-| 配置文件 | \`/etc/tcp-brutal-custom/config.json\` |
-| 历史数据库 | \`/var/lib/tcp-brutal-custom/history.db\` |
-| 管理 Unix Socket | \`/run/tcp-brutal-custom/manager.sock\` |
-| 端口规则 | \`/proc/net/tcp_brutal/ports\` |
-| 目标地址规则 | \`/proc/net/tcp_brutal/rules\` |
+| 配置文件 | `/etc/tcp-brutal-custom/config.json` |
+| 历史数据库 | `/var/lib/tcp-brutal-custom/history.db` |
+| 管理 Unix Socket | `/run/tcp-brutal-custom/manager.sock` |
+| 端口规则 | `/proc/net/tcp_brutal/ports` |
+| 目标地址规则 | `/proc/net/tcp_brutal/rules` |
 
 ## Web 管理面板
 
 默认地址：
 
-\`\`\`text
+```text
 http://服务器IP:23333
-\`\`\`
+```
 
 首次登录后，建议立即设置允许访问的客户端 IP。
 
@@ -120,19 +135,19 @@ http://服务器IP:23333
 - CSV / JSON 导出；
 - 面板监听地址和访问白名单；
 - 管理员密码；
-- 在线更新。
+- 检查新版本和发布说明；真正的维护升级只能由本机 root CLI 发起。
 
 ## CLI 使用
 
 进入交互式管理菜单：
 
-\`\`\`bash
+```bash
 sudo tcp-brutal-custom
-\`\`\`
+```
 
 常用命令：
 
-\`\`\`bash
+```bash
 # 查看整体状态
 sudo tcp-brutal-custom status
 
@@ -158,15 +173,15 @@ sudo tcp-brutal-custom panel 0.0.0.0 23334 203.0.113.5
 sudo tcp-brutal-custom autostart off
 
 # 更新
-sudo tcp-brutal-custom update
+sudo tcp-brutal-custom update  # 仅本机 root / SSH
 
 # 卸载
 sudo tcp-brutal-custom uninstall
-\`\`\`
+```
 
 ## 端口接管是怎么工作的
 
-\`\`\`text
+```text
 新的 TCP 入站连接
         │
         ▼
@@ -187,11 +202,11 @@ cgroup v2 SockOps eBPF
                   │
                   ▼
        Brutal pacing / 丢包补偿
-\`\`\`
+```
 
 eBPF 程序会在被动 TCP 连接建立时运行。
 
-如果该连接的本机监听端口已经加入管理列表，就通过 \`setsockopt(TCP_CONGESTION, "brutal")\` 自动切换拥塞控制算法。
+如果该连接的本机监听端口已经加入管理列表，就通过 `setsockopt(TCP_CONGESTION, "brutal")` 自动切换拥塞控制算法。
 
 随后 Brutal 初始化时，会根据本地端口查找对应连接组，并将该 socket 加入同一组。
 
@@ -211,9 +226,9 @@ Brutal 会进行丢包补偿。
 
 组内带宽也不是简单：
 
-\`\`\`text
+```text
 100 Mbps / 当前连接数
-\`\`\`
+```
 
 而是动态调度。
 
@@ -223,9 +238,9 @@ Brutal 会进行丢包补偿。
 
 ### 新增端口
 
-\`\`\`bash
+```bash
 sudo tcp-brutal-custom port add 443 100
-\`\`\`
+```
 
 只会影响之后建立的新连接。
 
@@ -235,17 +250,17 @@ sudo tcp-brutal-custom port add 443 100
 
 再次执行：
 
-\`\`\`bash
+```bash
 sudo tcp-brutal-custom port add 443 80
-\`\`\`
+```
 
 会更新原有连接组，因此已经接管的连接会立即使用新的速率。
 
 ### 删除端口
 
-\`\`\`bash
+```bash
 sudo tcp-brutal-custom port del 443
-\`\`\`
+```
 
 删除后：
 
@@ -277,17 +292,17 @@ sudo tcp-brutal-custom port del 443
 
 例如：
 
-\`\`\`bash
+```bash
 sudo brutalctl add 203.0.113.5/32 100
 sudo brutalctl list
 sudo brutalctl del 203.0.113.5/32
-\`\`\`
+```
 
 它的逻辑是：
 
-\`\`\`text
+```text
 目标地址前缀 → Brutal 共享连接组
-\`\`\`
+```
 
 完整说明请参考：
 
@@ -302,36 +317,34 @@ sudo brutalctl del 203.0.113.5/32
 
 ## 更新与维护
 
-执行：
-
-\`\`\`bash
+```bash
 sudo tcp-brutal-custom update
-\`\`\`
+```
 
-更新流程不是直接覆盖正在运行的模块，而是：
+Web 面板只能检查版本和查看发布说明，不能启动维护升级。会执行断流和内核模块替换的更新动作，只允许本机 root 通过管理 Unix Socket 发起，例如 SSH 登录后执行上面的命令。
 
-1. 下载和准备新版本；
+在停止任何服务之前，更新器会先使用本机固定的 Ed25519 公钥验证 `hashes.txt.sig`，再按照已签名的 `hashes.txt` 校验每个下载产物。缺少签名或验签失败时会直接中止。
+
+通过验证后才进入维护流程：
+
+1. 准备新版本；
 2. 停止管理服务；
 3. 主动断开受管端口上的 TCP 连接；
-4. 卸载当前 \`brutal\` 模块；
+4. 卸载当前 `brutal` 模块；
 5. 安装并切换新的 DKMS 模块和程序；
 6. 重新加载模块并启动服务。
 
-如果内核模块仍被其他连接占用，更新会中止。
+如果内核模块仍被其他连接占用，更新会中止；如果切换过程中失败，脚本会尝试恢复之前的程序和模块。
 
-如果已经开始切换、但新版安装失败，脚本会尝试恢复之前的程序和模块。
-
-因此建议：
-
-> **在维护窗口执行更新。**
+建议始终在维护窗口执行更新。
 
 ## 卸载
 
 普通卸载：
 
-\`\`\`bash
+```bash
 sudo tcp-brutal-custom uninstall
-\`\`\`
+```
 
 默认保留：
 
@@ -340,58 +353,58 @@ sudo tcp-brutal-custom uninstall
 
 如果希望彻底删除：
 
-\`\`\`bash
+```bash
 sudo /usr/local/lib/tcp-brutal-custom/install.sh --uninstall --purge
-\`\`\`
+```
 
 ## 从源码构建
 
 内核模块：
 
-\`\`\`bash
+```bash
 make
-\`\`\`
+```
 
 生成 DKMS 源码包：
 
-\`\`\`bash
+```bash
 make dkms-tarball
-\`\`\`
+```
 
 管理程序：
 
-\`\`\`bash
+```bash
 go build -o tcp-brutal-custom .
-\`\`\`
+```
 
-上游兼容的 \`brutalctl\`：
+上游兼容的 `brutalctl`：
 
-\`\`\`bash
+```bash
 make -C tools
-\`\`\`
+```
 
 常用检查：
 
-\`\`\`bash
+```bash
 make format-check
 CGO_ENABLED=0 go test ./...
-\`\`\`
+```
 
 ## 目录结构
 
 | 文件 | 作用 |
 | --- | --- |
-| \`brutal_cc.c\` | Brutal 拥塞控制、pacing 与连接组调度 |
-| \`brutal_ports.c\` | 本地 TCP 端口 → Brutal 连接组 |
-| \`brutal_rules.c\` | 上游目标地址前缀规则 |
-| \`brutal_sockopt.c\` | Brutal socket 参数和应用层连接组 |
-| \`selector_linux.go\` | cgroup SockOps eBPF 端口选择器 |
-| \`manager.go\` | Root 管理进程、API、端口控制和统计 |
-| \`main.go\` | CLI、配置和服务入口 |
-| \`history.go\` | SQLite 历史记录、聚合与保留策略 |
-| \`web/\` | 内嵌 Web 管理面板 |
-| \`scripts/install.sh\` | 安装、更新、回滚、卸载 |
-| \`tools/brutalctl.c\` | 上游兼容 \`brutalctl\` |
+| `brutal_cc.c` | Brutal 拥塞控制、pacing 与连接组调度 |
+| `brutal_ports.c` | 本地 TCP 端口 → Brutal 连接组 |
+| `brutal_rules.c` | 上游目标地址前缀规则 |
+| `brutal_sockopt.c` | Brutal socket 参数和应用层连接组 |
+| `selector_linux.go` | cgroup SockOps eBPF 端口选择器 |
+| `manager.go` | Root 管理进程、API、端口控制和统计 |
+| `main.go` | CLI、配置和服务入口 |
+| `history.go` | SQLite 历史记录、聚合与保留策略 |
+| `web/` | 内嵌 Web 管理面板 |
+| `scripts/install.sh` | 安装、更新、回滚、卸载 |
+| `tools/brutalctl.c` | 上游兼容 `brutalctl` |
 
 ## 与上游 TCP Brutal 的关系
 
@@ -412,6 +425,21 @@ CGO_ENABLED=0 go test ./...
 更详细的运维说明请参阅：
 
 [CUSTOM.zh.md](CUSTOM.zh.md)
+
+## Release 签名与供应链
+
+GitHub Actions 现在只负责构建**未签名的待发布产物**并上传为 workflow artifact，不再直接发布可信 Release。
+
+正式发布必须在 GitHub 之外使用离线 Ed25519 私钥签名：
+
+```bash
+bash scripts/sign-release.sh /path/to/release-signing-key.pem build
+bash scripts/publish-release.sh vX.Y.Z /path/to/release-signing-key.pem build
+```
+
+安装器和更新器要求 Release 中存在有效的 `hashes.txt.sig`。已安装机器会固定保存可信公钥，普通更新不能静默替换信任根；密钥轮换必须走显式迁移流程。
+
+详细说明见 [TRUST.md](TRUST.md)。
 
 ## 许可证
 
