@@ -25,7 +25,7 @@
 例如：
 
 ```bash
-sudo tbc port add 443 100
+sudo tbc2 port add 443 100
 ```
 
 之后，新建立到本机 TCP 443 端口的连接会自动切换为 Brutal。
@@ -168,41 +168,41 @@ http://服务器IP:23333
 进入交互式管理菜单：
 
 ```bash
-sudo tbc
+sudo tbc2
 ```
 
 常用命令：
 
 ```bash
 # 查看整体状态
-sudo tbc status
+sudo tbc2 status
 
 # 443 端口共享 100 Mbps
 # 默认 gain=20，即 2.0x
-sudo tbc port add 443 100
+sudo tbc2 port add 443 100
 
 # 443 端口共享 80 Mbps
 # gain=15，即 1.5x
-sudo tbc port add 443 80 gain=15
+sudo tbc2 port add 443 80 gain=15
 
 # 查看已配置端口
-sudo tbc ports
+sudo tbc2 ports
 
 # 删除规则
 # 已经存在的连接会继续运行直到关闭
-sudo tbc port del 443
+sudo tbc2 port del 443
 
 # 修改面板监听地址 / 端口 / 白名单
-sudo tbc panel 0.0.0.0 23334 203.0.113.5
+sudo tbc2 panel 0.0.0.0 23334 203.0.113.5
 
 # 关闭开机自启
-sudo tbc autostart off
+sudo tbc2 autostart off
 
 # 更新
-sudo tbc update  # 仅本机 root / SSH
+sudo tbc2 update  # 仅本机 root / SSH
 
 # 卸载
-sudo tbc uninstall
+sudo tbc2 uninstall
 ```
 
 ## 端口接管是怎么工作的
@@ -265,7 +265,7 @@ Brutal 会进行丢包补偿。
 ### 新增端口
 
 ```bash
-sudo tbc port add 443 100
+sudo tbc2 port add 443 100
 ```
 
 只会影响之后建立的新连接。
@@ -277,7 +277,7 @@ sudo tbc port add 443 100
 再次执行：
 
 ```bash
-sudo tbc port add 443 80
+sudo tbc2 port add 443 80
 ```
 
 会更新原有连接组，因此已经接管的连接会立即使用新的速率。
@@ -285,7 +285,7 @@ sudo tbc port add 443 80
 ### 删除端口
 
 ```bash
-sudo tbc port del 443
+sudo tbc2 port del 443
 ```
 
 删除后：
@@ -344,7 +344,7 @@ sudo brutalctl del 203.0.113.5/32
 ## 更新与维护
 
 ```bash
-sudo tbc update
+sudo tbc2 update
 ```
 
 Web 面板只能检查版本和查看发布说明，不能启动维护升级。会执行断流和内核模块替换的更新动作，只允许本机 root 通过管理 Unix Socket 发起，例如 SSH 登录后执行上面的命令。
@@ -369,7 +369,7 @@ Web 面板只能检查版本和查看发布说明，不能启动维护升级。�
 普通卸载：
 
 ```bash
-sudo tbc uninstall
+sudo tbc2 uninstall
 ```
 
 默认保留：
@@ -400,7 +400,7 @@ make dkms-tarball
 管理程序：
 
 ```bash
-go build -o tbc .
+go build -o tbc2 .
 ```
 
 上游兼容的 `brutalctl`：

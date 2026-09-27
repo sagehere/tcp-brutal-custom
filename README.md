@@ -23,7 +23,7 @@ The main goal is simple: run a normal TCP service on a Debian/Ubuntu VPS and ena
 For example:
 
 ```bash
-sudo tbc port add 443 100
+sudo tbc2 port add 443 100
 ```
 
 New TCP connections accepted on local port `443` will use Brutal automatically. All connections on that port share a **100 Mbps target effective rate** as one group.
@@ -152,38 +152,38 @@ The panel provides:
 Open the interactive manager:
 
 ```bash
-sudo tbc
+sudo tbc2
 ```
 
 Common commands:
 
 ```bash
 # Overall status
-sudo tbc status
+sudo tbc2 status
 
 # 443 shares a 100 Mbps target rate; default gain is 20 = 2.0x
-sudo tbc port add 443 100
+sudo tbc2 port add 443 100
 
 # 443 shares 80 Mbps, CWND gain 15 = 1.5x
-sudo tbc port add 443 80 gain=15
+sudo tbc2 port add 443 80 gain=15
 
 # List configured ports
-sudo tbc ports
+sudo tbc2 ports
 
 # Remove the rule; existing connections keep running until they close
-sudo tbc port del 443
+sudo tbc2 port del 443
 
 # Change panel listener / allow-list
-sudo tbc panel 0.0.0.0 23334 203.0.113.5
+sudo tbc2 panel 0.0.0.0 23334 203.0.113.5
 
 # Disable service autostart
-sudo tbc autostart off
+sudo tbc2 autostart off
 
 # Update from the latest release
-sudo tbc update  # local root/SSH only
+sudo tbc2 update  # local root/SSH only
 
 # Uninstall
-sudo tbc uninstall
+sudo tbc2 uninstall
 ```
 
 ## How port takeover works
@@ -264,7 +264,7 @@ When a connection matches both mechanisms, the local **port rule is applied firs
 ## Updates and maintenance
 
 ```bash
-sudo tbc update
+sudo tbc2 update
 ```
 
 Authenticated Web sessions can check release information but cannot start an update. The disruptive maintenance operation is restricted to a local root caller on the manager Unix socket, for example through SSH.
@@ -289,7 +289,7 @@ Run updates during a maintenance window.
 Standard uninstall keeps configuration and history:
 
 ```bash
-sudo tbc uninstall
+sudo tbc2 uninstall
 ```
 
 To remove persistent configuration and history as well:
@@ -310,7 +310,7 @@ make dkms-tarball
 Management program:
 
 ```bash
-go build -o tbc .
+go build -o tbc2 .
 ```
 
 Upstream-compatible CLI:
