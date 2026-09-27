@@ -12,6 +12,25 @@ binary='/usr/local/bin/tcp-brutal-custom'
 config='/etc/tcp-brutal-custom/config.json'
 data='/var/lib/tcp-brutal-custom'
 mode="${1:-install}"
+release_key="$library/release-signing-pub.pem"
+release_key_fingerprint='b1a16baa2d9c68fdff5594e1261e0668f45b65253bf454b7c27025265b99bc1d'
+
+write_embedded_release_key() {
+  cat >"$1" <<'EOF'
+-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEA32QwT1Z9jNobN7jIIlY2KZazDgzidVQOx3/dOLp0AIs=
+-----END PUBLIC KEY-----
+EOF
+}
+
+verify_release_key() {
+  local actual
+  actual=$(openssl pkey -pubin -in "$1" -outform DER 2>/dev/null | openssl dgst -sha256 | awk '{print $2}')
+  [[ "$actual" == "$release_key_fingerprint" ]] || {
+    echo "Release signing key fingerprint mismatch" >&2
+    exit 1
+  }
+}
 
 if (( EUID != 0 )); then echo 'Run as root' >&2; exit 1; fi
 
@@ -27,6 +46,10 @@ check_host() {
   command -v curl >/dev/null || { echo 'curl required' >&2; exit 1; }
   command -v sha256sum >/dev/null || { echo 'sha256sum required' >&2; exit 1; }
   command -v ss >/dev/null || { echo 'iproute2 ss required' >&2; exit 1; }
+  if ! command -v openssl >/dev/null; then
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y openssl
+  fi
 }
 
 write_units() {
@@ -145,7 +168,23 @@ fi
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
+
+# Updates trust the key already pinned on the machine. Fresh installs use the
+# embedded bootstrap key; operators should verify its fingerprint out-of-band.
+if [[ "$mode" == '--update' && -f "$release_key" ]]; then
+  cp -a "$release_key" "$tmp/trusted-release-key.pem"
+else
+  write_embedded_release_key "$tmp/trusted-release-key.pem"
+fi
+verify_release_key "$tmp/trusted-release-key.pem"
+
 curl -fsSL --retry 3 "$release/hashes.txt" -o "$tmp/hashes.txt"
+curl -fsSL --retry 3 "$release/hashes.txt.sig" -o "$tmp/hashes.txt.sig"
+if ! openssl pkeyutl -verify -rawin -pubin -inkey "$tmp/trusted-release-key.pem"     -sigfile "$tmp/hashes.txt.sig" -in "$tmp/hashes.txt" >/dev/null 2>&1; then
+  echo 'Release manifest signature verification failed' >&2
+  exit 1
+fi
+
 curl -fsSL --retry 3 "$release/$name-linux-$arch" -o "$tmp/$name-linux-$arch"
 curl -fsSL --retry 3 "$release/$name.dkms.tar.gz" -o "$tmp/$name.dkms.tar.gz"
 curl -fsSL --retry 3 "$release/install.sh" -o "$tmp/install.sh"
@@ -165,6 +204,11 @@ if ! id tcpbrutal >/dev/null 2>&1; then useradd --system --no-create-home --shel
 
 mkdir -p "$data" "$library" "/usr/src/$name-$module_version"
 chmod 700 "$data"
+if [[ ! -f "$release_key" ]]; then
+  install -m 644 "$tmp/trusted-release-key.pem" "$release_key"
+else
+  verify_release_key "$release_key"
+fi
 if [[ ! -f "$library/module-version" && ! -d "$data/upstream" ]]; then
   original=$(modinfo -n brutal 2>/dev/null || true)
   if [[ -n "$original" && -f "$original" ]]; then
