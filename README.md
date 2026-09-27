@@ -89,7 +89,7 @@ Releases use an offline Ed25519 signing key. The private key is not stored in Gi
 Before a first install, obtain `keys/release-signing-pub.pem` and verify this SHA-256 fingerprint through a channel you trust independently of this GitHub repository:
 
 ```text
-b1a16baa2d9c68fdff5594e1261e0668f45b65253bf454b7c27025265b99bc1d
+249a5abded1a497f8fe67f4cf5cd8e47d127b9cee2d9b1eac23042b7edfeceff
 ```
 
 Then verify the release before running anything as root:
@@ -382,7 +382,7 @@ bash scripts/sign-release.sh /path/to/release-signing-key.pem build
 bash scripts/publish-release.sh vX.Y.Z /path/to/release-signing-key.pem build
 ```
 
-Installers reject releases without a valid `hashes.txt.sig`. Existing systems pin the release public key locally; ordinary updates cannot silently replace the trust root. Key rotation therefore requires an explicit migration.
+Installers reject releases without a valid `hashes.txt.sig`. Existing systems pin the release public key locally; ordinary updates cannot silently replace the trust root. Key rotation therefore requires an explicit migration. The 2026-09-28 rotation from the lost original key to the new key is documented in TRUST.md; existing installations must run the explicit migration helper before updating.
 
 See [TRUST.md](TRUST.md).
 
