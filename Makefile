@@ -6,10 +6,10 @@ KBUILD_LLVM     := $(if $(KERNEL_CONFIG),$(if $(shell grep -qs '^CONFIG_CC_IS_CL
 DKMS_TARBALL    ?= dkms.tar.gz
 TAR             ?= tar
 CLANG_FORMAT    ?= clang-format-18
-SRCS            := brutal.h brutal_cc.c brutal_sockopt.c brutal_rules.c tools/brutalctl.c tools/Makefile .clang-format
+SRCS            := brutal.h brutal_cc.c brutal_sockopt.c brutal_rules.c brutal_ports.c tools/brutalctl.c tools/Makefile .clang-format
 FORMAT_SRCS     := $(filter %.c %.h,$(SRCS))
 obj-m           += brutal.o
-brutal-objs     := brutal_cc.o brutal_sockopt.o brutal_rules.o
+brutal-objs     := brutal_cc.o brutal_sockopt.o brutal_rules.o brutal_ports.o
 
 ccflags-y := -std=gnu99
 

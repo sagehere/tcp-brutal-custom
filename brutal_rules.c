@@ -53,6 +53,8 @@ void brutal_apply_rule(struct sock *sk, struct brutal *brutal)
 {
     struct brutal_rule *r, *best = NULL;
 
+    if (!net_eq(sock_net(sk), &init_net))
+        return;
     rcu_read_lock();
     list_for_each_entry_rcu(r, &brutal_rules, list)
     {
@@ -123,6 +125,7 @@ static int brutal_rule_add(char *args)
     u64 rate = 0;
     u32 gain = INIT_CWND_GAIN;
     bool lock = true;
+    bool created = false;
     char *tok = strsep(&args, " ");
     int ret;
 
@@ -161,12 +164,14 @@ static int brutal_rule_add(char *args)
             return -ENOMEM;
         }
         r->group = g;
-        list_add_tail_rcu(&r->list, &brutal_rules);
+        created = true;
     }
     g = r->group;
     WRITE_ONCE(g->rate, rate);
     WRITE_ONCE(g->cwnd_gain, gain);
     WRITE_ONCE(g->locked, lock);
+    if (created)
+        list_add_tail_rcu(&r->list, &brutal_rules);
     mutex_unlock(&brutal_rules_mutex);
     return 0;
 }
@@ -272,7 +277,7 @@ int brutal_rules_init(void)
 {
     struct proc_dir_entry *dir = proc_mkdir("tcp_brutal", init_net.proc_net);
 
-    if (!dir || !proc_create("rules", 0644, dir, &brutal_rules_proc_ops))
+    if (!dir || !proc_create("rules", 0644, dir, &brutal_rules_proc_ops) || brutal_ports_init(dir))
     {
         remove_proc_subtree("tcp_brutal", init_net.proc_net);
         return -ENOMEM;
@@ -283,5 +288,6 @@ int brutal_rules_init(void)
 void brutal_rules_exit(void)
 {
     remove_proc_subtree("tcp_brutal", init_net.proc_net);
+    brutal_ports_exit();
     brutal_rules_flush();
 }

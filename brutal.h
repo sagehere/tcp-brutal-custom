@@ -11,8 +11,8 @@
 #endif
 
 #define BRUTAL_VERSION_MAJOR 2
-#define BRUTAL_VERSION_MINOR 0
-#define BRUTAL_VERSION_PATCH 1
+#define BRUTAL_VERSION_MINOR 1
+#define BRUTAL_VERSION_PATCH 0
 #define BRUTAL_VERSION ((BRUTAL_VERSION_MAJOR << 16) | (BRUTAL_VERSION_MINOR << 8) | BRUTAL_VERSION_PATCH)
 
 #define TCP_BRUTAL_PARAMS 23301  // setsockopt/getsockopt: struct brutal_params
@@ -54,7 +54,19 @@ struct brutal_group
     u8 locked; // rule group: applications may not change the params
     u32 members;
     u64 sent_bytes;
+    u64 acked_bytes;
+    u64 retrans_bytes;
+    u64 rtt_sum_us;
+    u64 rtt_samples;
+    u32 rtt_max_us;
     u64 next_ns;
+};
+
+struct brutal_stats_state
+{
+    u64 sent;
+    u64 acked;
+    u64 retrans;
 };
 
 // Per-socket state, lives in icsk_ca_priv
@@ -70,6 +82,7 @@ struct brutal
     u64 resv_bytes_sent; // tp->bytes_sent when reserved
 
     struct brutal_pkt_info slots[PKT_INFO_SLOTS];
+    struct brutal_stats_state *stats;
 };
 
 struct brutal_params
@@ -84,12 +97,13 @@ struct brutal_params
 // brutal_cc.c: the congestion control
 extern struct tcp_congestion_ops tcp_brutal_ops;
 void brutal_update_rate(struct sock *sk);
+void brutal_stats_flush(struct sock *sk);
 
 // brutal_sockopt.c: groups and the application interface
 struct brutal_group *brutal_group_alloc(u64 id);
 void brutal_group_put(struct brutal_group *g);
 void brutal_group_join(struct brutal *brutal, struct brutal_group *g);
-void brutal_group_leave(struct brutal *brutal);
+void brutal_group_leave(struct sock *sk, struct brutal *brutal);
 void brutal_sockopt_init(void);
 void brutal_sockopt_install(struct sock *sk);
 void brutal_sockopt_uninstall(struct sock *sk);
@@ -98,5 +112,11 @@ void brutal_sockopt_uninstall(struct sock *sk);
 void brutal_apply_rule(struct sock *sk, struct brutal *brutal);
 int brutal_rules_init(void);
 void brutal_rules_exit(void);
+
+// brutal_ports.c: local TCP service ports and /proc/net/tcp_brutal/ports
+struct proc_dir_entry;
+void brutal_apply_port(struct sock *sk, struct brutal *brutal);
+int brutal_ports_init(struct proc_dir_entry *dir);
+void brutal_ports_exit(void);
 
 #endif // BRUTAL_H

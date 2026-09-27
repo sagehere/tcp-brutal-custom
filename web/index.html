@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TCP Brutal Custom</title>
+<style>
+  :root{font-family:system-ui,sans-serif;color:#e6e9f0;background:#0d1320}body{margin:0 auto;max-width:1100px;padding:24px}h1{font-size:1.8rem}h2{font-size:1.2rem;margin-top:30px}p{color:#aeb9cd}.card{background:#182235;padding:20px;border-radius:12px;margin:16px 0}label{display:inline-block;margin:8px 16px 8px 0}input,select,button{font:inherit;padding:9px;border-radius:6px;border:1px solid #40516e;background:#0d1320;color:#fff}input{max-width:190px}button{cursor:pointer;background:#2872d6;border:0;margin:4px}button.danger{background:#9c3945}button:focus,input:focus{outline:2px solid #6fb1ff}table{width:100%;border-collapse:collapse}td,th{padding:10px;border-bottom:1px solid #34415a;text-align:left}th{color:#aeb9cd}svg{width:100%;height:220px;background:#101a2b;border-radius:8px}#notice{min-height:1.3em;color:#f0c77e}#app{display:none}.scroll{overflow-x:auto}.stats{display:flex;gap:12px;flex-wrap:wrap}.stat{background:#101a2b;padding:14px;min-width:145px;border-radius:8px}.stat strong{display:block;font-size:1.35rem;margin-top:5px}
+</style>
+<h1>TCP Brutal Custom</h1>
+<p id="notice" role="status" aria-live="polite"></p>
+<section id="login" class="card">
+  <h2>管理员登录</h2>
+  <form id="loginForm"><label>密码 <input id="password" type="password" autocomplete="current-password" required></label><button>登录</button></form>
+</section>
+<main id="app">
+  <section class="card"><h2>运行状态</h2><div class="stats" id="stats"></div><button id="refresh">刷新</button></section>
+  <section class="card"><h2>接管端口</h2><div class="scroll"><table><thead><tr><th>端口</th><th>状态</th><th>目标 Mbps</th><th>增益</th><th>连接</th><th>发送</th><th>重传</th><th>RTT</th><th>接管失败</th><th>操作</th></tr></thead><tbody id="ports"></tbody></table></div>
+    <form id="portForm"><label>端口 <input id="port" type="number" min="1" max="65535" required></label><label>目标 Mbps <input id="rate" type="number" min="0.5" max="1000000" step="0.1" required></label><label>CWND 增益 <input id="gain" type="number" min="5" max="80" value="20" required></label><label><input id="enabled" type="checkbox" checked>启用</label><button>保存</button></form>
+  </section>
+  <section class="card"><h2>历史统计</h2><label>端口 <select id="metricPort"><option value="0">全部</option></select></label><label>范围 <select id="range"><option value="86400">24 小时</option><option value="604800">7 天</option><option value="7776000">90 天</option><option value="31536000">1 年</option></select></label><label>指标 <select id="metricKind"><option value="sent">发送量</option><option value="retrans">重传率</option><option value="rtt">RTT</option></select></label><button id="exportCSV">导出 CSV</button><button id="exportJSON">导出 JSON</button><svg id="chart" role="img" aria-label="历史趋势图" viewBox="0 0 800 220"><polyline id="line" fill="none" stroke="#62b0ff" stroke-width="3" points=""></polyline></svg><p id="chartNote"></p></section>
+  <section class="card"><h2>面板设置</h2><form id="settingsForm"><label>监听 IP <input id="host" required></label><label>端口 <input id="webPort" type="number" min="1" max="65535" required></label><label>允许访问的 IP（逗号分隔；留空表示不限） <input id="allowIPs"></label><button>保存（需重启 Web 服务）</button></form><form id="changePassword"><label>新密码（至少 16 字符） <input id="newPassword" type="password" minlength="16" required></label><button>修改密码</button></form></section>
+  <section class="card"><h2>维护</h2><button id="checkUpdate">检查更新</button><button id="update">启动维护升级</button><p id="releaseNotes"></p><p id="job"></p><p>更新会中断受管连接；请在维护窗口使用。</p></section>
+</main>
+<script src="/app.js" defer></script>
+</html>

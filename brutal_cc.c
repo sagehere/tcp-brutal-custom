@@ -1,6 +1,7 @@
 // The congestion control: rate and cwnd, loss compensation, and the group clock
 #include <linux/module.h>
 #include <linux/math64.h>
+#include <linux/slab.h>
 #include "brutal.h"
 
 #define MIN_PKT_INFO_SAMPLES 50
@@ -17,6 +18,39 @@ static u64 brutal_effective_rate(const struct brutal *brutal)
     u64 rate = brutal->group ? READ_ONCE(brutal->group->rate) : brutal->rate;
 
     return div_u64(rate * 100, brutal->ack_rate);
+}
+
+// Account from TCP's own payload counters. The last flush is on CA release,
+// so short connections and the final burst are included.
+void brutal_stats_flush(struct sock *sk)
+{
+    struct brutal *brutal = inet_csk_ca(sk);
+    struct brutal_stats_state *st = brutal->stats;
+    struct brutal_group *g = brutal->group;
+    struct tcp_sock *tp = tcp_sk(sk);
+    u64 sent, acked, retrans;
+    u32 rtt;
+
+    if (!g || !st)
+        return;
+    sent = tp->bytes_sent;
+    acked = tp->bytes_acked;
+    retrans = tp->bytes_retrans;
+    rtt = tp->srtt_us >> 3;
+    spin_lock_bh(&g->lock);
+    g->sent_bytes += sent - st->sent;
+    g->acked_bytes += acked - st->acked;
+    g->retrans_bytes += retrans - st->retrans;
+    if (rtt)
+    {
+        g->rtt_sum_us += rtt;
+        g->rtt_samples++;
+        g->rtt_max_us = max(g->rtt_max_us, rtt);
+    }
+    spin_unlock_bh(&g->lock);
+    st->sent = sent;
+    st->acked = acked;
+    st->retrans = retrans;
 }
 
 void brutal_update_rate(struct sock *sk)
@@ -126,10 +160,11 @@ static void brutal_group_reserve(struct sock *sk)
             g->next_ns += div64_u64((u64)delta * NSEC_PER_SEC, rate);
         else
             g->next_ns -= div64_u64((u64)(-delta) * NSEC_PER_SEC, rate);
-        g->sent_bytes += sent;
         spin_unlock_bh(&g->lock);
         brutal->resv_bytes = 0;
     }
+
+    brutal_stats_flush(sk);
 
     // Reserve the next burst, if this call can actually send one
     unsent = tp->write_seq - tp->snd_nxt;
@@ -185,8 +220,17 @@ static void brutal_init(struct sock *sk)
     brutal->rate = INIT_PACING_RATE;
     brutal->cwnd_gain = INIT_CWND_GAIN;
     brutal->ack_rate = 100;
+    brutal->stats = kzalloc(sizeof(*brutal->stats), GFP_ATOMIC);
+    if (brutal->stats)
+    {
+        brutal->stats->sent = tp->bytes_sent;
+        brutal->stats->acked = tp->bytes_acked;
+        brutal->stats->retrans = tp->bytes_retrans;
+    }
 
-    brutal_apply_rule(sk, brutal);
+    brutal_apply_port(sk, brutal);
+    if (!brutal->group)
+        brutal_apply_rule(sk, brutal);
     if (brutal->group)
         brutal_update_rate(sk);
 
@@ -196,7 +240,10 @@ static void brutal_init(struct sock *sk)
 
 static void brutal_release(struct sock *sk)
 {
-    brutal_group_leave(inet_csk_ca(sk));
+    struct brutal *brutal = inet_csk_ca(sk);
+
+    brutal_group_leave(sk, brutal);
+    kfree(brutal->stats);
     brutal_sockopt_uninstall(sk);
 }
 
@@ -233,6 +280,7 @@ static void brutal_main(struct sock *sk, const struct rate_sample *rs)
     }
 
     brutal_update_rate(sk);
+    brutal_stats_flush(sk);
 }
 
 static u32 brutal_undo_cwnd(struct sock *sk)

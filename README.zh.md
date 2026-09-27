@@ -1,5 +1,7 @@
 # <img src="logo.png" width="400">
 
+> **TCP Brutal Custom 定制版。** 端口接管、面板、菜单和安装说明见 [CUSTOM.zh.md](CUSTOM.zh.md)。下文原有的目标 IP 规则说明来自 [HyNetworks/tcp-brutal](https://github.com/HyNetworks/tcp-brutal)。
+
 TCP Brutal 是 [Hysteria](https://hysteria.network/) 的 Brutal 拥塞控制算法在 TCP 上的实现，以 Linux 内核模块的形式提供。关于 Brutal 算法本身的详细说明，请参阅 [Hysteria 文档](https://hysteria.network/zh/docs/advanced/Full-Server-Config/#_6)。
 
 作为 Hysteria 的官方子项目，TCP Brutal 会持续维护，并与 Hysteria 中的 Brutal 实现保持同步。
@@ -15,7 +17,7 @@ https://github.com/user-attachments/assets/ba5f938b-265a-49a5-8b60-ce7efac0c6e2
 ### 安装
 
 ```bash
-bash <(curl -fsSL https://tcp.hy2.sh/)
+curl -fsSL https://raw.githubusercontent.com/sagehere/tcp-brutal-custom/main/scripts/install.sh -o /tmp/tcp-brutal-custom-install.sh && sudo bash /tmp/tcp-brutal-custom-install.sh
 ```
 
 该脚本会通过 DKMS 安装内核模块，并将 `brutalctl` 工具安装到 `/usr/local/bin`。需要 Linux 5.10 或更高版本。

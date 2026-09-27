@@ -77,12 +77,13 @@ void brutal_group_join(struct brutal *brutal, struct brutal_group *g)
     spin_unlock_bh(&g->lock);
 }
 
-void brutal_group_leave(struct brutal *brutal)
+void brutal_group_leave(struct sock *sk, struct brutal *brutal)
 {
     struct brutal_group *g = brutal->group;
 
     if (!g)
         return;
+    brutal_stats_flush(sk);
     brutal->group = NULL;
     brutal->resv_bytes = 0;
     spin_lock_bh(&g->lock);
@@ -123,7 +124,7 @@ static int brutal_set_params(struct sock *sk, sockptr_t optval, unsigned int opt
         return -EPERM; // governed by a locked destination rule
     }
     if (!params.group_id)
-        brutal_group_leave(brutal);
+        brutal_group_leave(sk, brutal);
     else if (!brutal->group || brutal->group->id != params.group_id)
     {
         struct brutal_group *g = brutal_group_get(sk, params.group_id);
@@ -132,7 +133,7 @@ static int brutal_set_params(struct sock *sk, sockptr_t optval, unsigned int opt
             release_sock(sk);
             return -ENOMEM;
         }
-        brutal_group_leave(brutal);
+        brutal_group_leave(sk, brutal);
         brutal_group_join(brutal, g);
     }
     if (brutal->group)
@@ -203,10 +204,31 @@ static int brutal_get_version(char __user *optval, int __user *optlen)
     return 0;
 }
 
+static int brutal_congestion_locked(struct sock *sk, sockptr_t optval, unsigned int optlen)
+{
+    struct brutal *brutal = inet_csk_ca(sk);
+    char name[TCP_CA_NAME_MAX] = {};
+    bool locked;
+
+    if (!optlen || copy_from_sockptr(name, optval, min_t(unsigned int, optlen, sizeof(name) - 1)))
+        return -EFAULT;
+    lock_sock(sk);
+    locked = brutal->group && READ_ONCE(brutal->group->locked);
+    release_sock(sk);
+    if (!locked)
+        return 0;
+    return strcmp(name, "brutal") ? -EPERM : 0;
+}
+
 static int brutal_tcp_setsockopt(struct sock *sk, int level, int optname, sockptr_t optval, unsigned int optlen)
 {
     if (level == IPPROTO_TCP && optname == TCP_BRUTAL_PARAMS)
         return brutal_set_params(sk, optval, optlen);
+    else if (level == IPPROTO_TCP && optname == TCP_CONGESTION)
+    {
+        int ret = brutal_congestion_locked(sk, optval, optlen);
+        return ret ?: tcp_prot.setsockopt(sk, level, optname, optval, optlen);
+    }
     else
         return tcp_prot.setsockopt(sk, level, optname, optval, optlen);
 }
@@ -226,6 +248,11 @@ static int brutal_tcpv6_setsockopt(struct sock *sk, int level, int optname, sock
 {
     if (level == IPPROTO_TCP && optname == TCP_BRUTAL_PARAMS)
         return brutal_set_params(sk, optval, optlen);
+    else if (level == IPPROTO_TCP && optname == TCP_CONGESTION)
+    {
+        int ret = brutal_congestion_locked(sk, optval, optlen);
+        return ret ?: tcpv6_prot.setsockopt(sk, level, optname, optval, optlen);
+    }
     else
         return tcpv6_prot.setsockopt(sk, level, optname, optval, optlen);
 }

@@ -1,8 +1,10 @@
 # <img src="logo.png" width="400">
 
+> **TCP Brutal Custom fork.** The custom port takeover, panel, installer, and release assets live at [sagehere/tcp-brutal-custom](https://github.com/sagehere/tcp-brutal-custom). See [custom usage](CUSTOM.zh.md). The destination-rule documentation below comes from [HyNetworks/tcp-brutal](https://github.com/HyNetworks/tcp-brutal).
+
 TCP Brutal is [Hysteria](https://hysteria.network/)'s congestion control algorithm ported to TCP, as a Linux kernel module. Information about Brutal itself can be found in the [Hysteria documentation](https://hysteria.network/docs/advanced/Full-Server-Config/#bandwidth-behavior-explained).
 
-As an official subproject of Hysteria, TCP Brutal is actively maintained to be in sync with the Brutal implementation in Hysteria.
+The upstream TCP Brutal project is an official Hysteria subproject. This custom fork is maintained separately.
 
 **中文文档：[README.zh.md](README.zh.md)**
 
@@ -15,7 +17,7 @@ https://github.com/user-attachments/assets/26c5ab0d-759b-4499-a891-c533a8b975ce
 ### Install
 
 ```bash
-bash <(curl -fsSL https://tcp.hy2.sh/)
+curl -fsSL https://raw.githubusercontent.com/sagehere/tcp-brutal-custom/main/scripts/install.sh -o /tmp/tcp-brutal-custom-install.sh && sudo bash /tmp/tcp-brutal-custom-install.sh
 ```
 
 This installs the kernel module through DKMS and the `brutalctl` tool to `/usr/local/bin`. Linux 5.10 or later is required.

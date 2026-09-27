@@ -30,6 +30,7 @@ static int usage(void)
           "       brutalctl add <prefix>[/<len>] <rate_mbps> [gain=<tenths>] [nolock] [noroute]\n"
           "       brutalctl del <prefix>[/<len>]\n"
           "       brutalctl flush\n"
+          "       brutalctl port list|add <port> <rate_mbps> [gain=<tenths>]|del <port>\n"
           "\n"
           "All connections to the prefix share the rate as one group. add also installs\n"
           "the route that makes the kernel use brutal for the prefix (ip route replace\n"
@@ -337,6 +338,29 @@ int main(int argc, char **argv)
 
     if (argc < 2)
         return usage();
+    if (!strcmp(argv[1], "port"))
+    {
+        char *args[16];
+        int i;
+
+        if (argc < 3 || argc > 15)
+            return usage();
+        args[0] = "tcp-brutal-custom";
+        if (!strcmp(argv[2], "list"))
+        {
+            args[1] = "ports";
+            args[2] = NULL;
+        }
+        else
+        {
+            for (i = 2; i < argc; i++)
+                args[i - 1] = argv[i];
+            args[argc - 1] = NULL;
+        }
+        execvp(args[0], args);
+        perror("brutalctl: tcp-brutal-custom");
+        return 1;
+    }
     if (!strcmp(argv[1], "list") || !strcmp(argv[1], "ls"))
         return argc == 2 ? list_rules() : usage();
     if (!strcmp(argv[1], "add"))
