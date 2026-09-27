@@ -338,6 +338,20 @@ The custom additions in this repository focus on operational deployment:
 
 For a more detailed Chinese operational guide, see [CUSTOM.zh.md](CUSTOM.zh.md).
 
+### Upstream synchronization
+
+`.github/workflows/upstream-sync.yml` checks `HyNetworks/tcp-brutal:master` daily and can also be run manually.
+
+When upstream has new commits, the workflow:
+
+1. creates an `upstream-sync/<upstream-sha>` branch;
+2. performs a normal Git merge, preserving upstream history;
+3. pushes the branch only when the merge is conflict-free;
+4. opens a PR against `main`;
+5. lets the normal PR CI run.
+
+It **never auto-merges and never publishes a release**. If the merge has conflicts, the job fails and prints the conflicting files instead of resolving them with an unsafe automatic strategy. Kernel/eBPF changes still require human review and target-kernel testing.
+
 ## Release signing
 
 GitHub Actions builds an **unsigned release bundle** and uploads it as a workflow artifact. It no longer publishes trusted releases directly.

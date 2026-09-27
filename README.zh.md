@@ -426,6 +426,20 @@ CGO_ENABLED=0 go test ./...
 
 [CUSTOM.zh.md](CUSTOM.zh.md)
 
+### 自动跟踪上游
+
+`.github/workflows/upstream-sync.yml` 每天检查一次 `HyNetworks/tcp-brutal:master`，也可以从 Actions 手动运行。
+
+发现上游新增提交后，workflow 会：
+
+1. 创建 `upstream-sync/<上游SHA>` 分支；
+2. 使用标准 Git merge 保留上游提交历史；
+3. 只有在无冲突时才 push 同步分支；
+4. 自动创建指向 `main` 的 PR；
+5. 让现有 PR CI 检查格式、Go 测试和 Shell 语法。
+
+它**不会自动合并，也不会自动发布 Release**。如果出现冲突，Action 会失败并列出冲突文件，不会用 `ours` / `theirs` 自动覆盖。涉及内核或 eBPF 的上游变化仍需人工审查，并在实际目标内核上验证。
+
 ## Release 签名与供应链
 
 GitHub Actions 现在只负责构建**未签名的待发布产物**并上传为 workflow artifact，不再直接发布可信 Release。
