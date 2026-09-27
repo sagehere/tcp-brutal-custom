@@ -154,8 +154,8 @@ static void show_port(struct seq_file *m, const struct brutal_port_rule *r, bool
     const struct brutal_group *g = r->group;
 
     seq_printf(m, "port=%u active=%u rate=%llu gain=%u id=%llu members=%u "
-               "sent=%llu acked=%llu retrans=%llu rtt_sum=%llu "
-               "rtt_samples=%llu rtt_max=%u\n",
+                  "sent=%llu acked=%llu retrans=%llu rtt_sum=%llu "
+                  "rtt_samples=%llu rtt_max=%u\n",
                r->port, active, READ_ONCE(g->rate), READ_ONCE(g->cwnd_gain),
                g->id, READ_ONCE(g->members), READ_ONCE(g->sent_bytes),
                READ_ONCE(g->acked_bytes), READ_ONCE(g->retrans_bytes),
