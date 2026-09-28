@@ -112,7 +112,7 @@ func managerMode() error {
 			}
 		}
 	}
-	if err = os.MkdirAll("/run/tcp-brutal-custom", 0750); err != nil {
+	if err = os.MkdirAll("/run/tcp-brutal-canary", 0750); err != nil {
 		return err
 	}
 	group, err := user.LookupGroup("tcpbrutal")
@@ -123,7 +123,7 @@ func managerMode() error {
 	if err != nil {
 		return err
 	}
-	os.Chown("/run/tcp-brutal-custom", 0, gid)
+	os.Chown("/run/tcp-brutal-canary", 0, gid)
 	if err = writePublicWebConfig(cfg, gid); err != nil {
 		return err
 	}
@@ -595,7 +595,7 @@ func (m *manager) metrics(w http.ResponseWriter, r *http.Request) {
 	}
 	if q.Get("format") == "csv" {
 		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-		w.Header().Set("Content-Disposition", "attachment; filename=brutal-history.csv")
+		w.Header().Set("Content-Disposition", "attachment; filename=brutal-canary-history.csv")
 		csvw := csv.NewWriter(w)
 		csvw.Write([]string{"time_unix", "port", "group", "sent_bytes", "acked_bytes", "retrans_bytes", "retrans_percent", "success", "failure", "members", "rtt_mean_us", "rtt_max_us", "gap", "event", "expected_bytes", "actual_bytes"})
 		for _, x := range rows {
@@ -741,7 +741,7 @@ func (m *manager) autostart(w http.ResponseWriter, r *http.Request) {
 		bad(w, 400, errors.New("invalid state"))
 		return
 	}
-	out, err := exec.Command("systemctl", verb, "tcp-brutal-custom-manager.service", "tcp-brutal-custom-web.service").CombinedOutput()
+	out, err := exec.Command("systemctl", verb, "tcp-brutal-canary-manager.service", "tcp-brutal-canary-web.service").CombinedOutput()
 	if err != nil {
 		bad(w, 500, fmt.Errorf("%s: %w", out, err))
 		return
@@ -751,7 +751,7 @@ func (m *manager) autostart(w http.ResponseWriter, r *http.Request) {
 }
 
 func autostartState(query func(string) (string, error)) map[string]any {
-	services := []string{"tcp-brutal-custom-manager.service", "tcp-brutal-custom-web.service"}
+	services := []string{"tcp-brutal-canary-manager.service", "tcp-brutal-canary-web.service"}
 	states := make([]bool, len(services))
 	unknown := false
 	for i, service := range services {
@@ -789,7 +789,7 @@ func (m *manager) startUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m.mu.Lock()
-	if m.job.State == "running" || exec.Command("systemctl", "is-active", "--quiet", "tcp-brutal-custom-update.service").Run() == nil {
+	if m.job.State == "running" || exec.Command("systemctl", "is-active", "--quiet", "tcp-brutal-canary-update.service").Run() == nil {
 		m.mu.Unlock()
 		bad(w, 409, errors.New("update already running"))
 		return
@@ -859,7 +859,7 @@ func (m *manager) checkUpdate(w http.ResponseWriter, r *http.Request) {
 func (m *manager) performUpdate(id string) {
 	// A dedicated systemd unit owns module replacement so this manager can
 	// report the job and the work survives a browser disconnect.
-	out, err := exec.Command("systemctl", "start", "--no-block", "tcp-brutal-custom-update.service").CombinedOutput()
+	out, err := exec.Command("systemctl", "start", "--no-block", "tcp-brutal-canary-update.service").CombinedOutput()
 	if err != nil {
 		m.updateJobState("failed", fmt.Sprintf("%s: %v", out, err))
 		return
