@@ -67,6 +67,8 @@ struct brutal_stats_state
     u64 sent;
     u64 acked;
     u64 retrans;
+    u32 min_rtt_us;
+    u8 congestion_limited;
 };
 
 // Per-socket state, lives in icsk_ca_priv

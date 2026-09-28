@@ -7,6 +7,12 @@
 #define MIN_PKT_INFO_SAMPLES 50
 #define MIN_ACK_RATE_PERCENT 80
 
+// Keep loss compensation for lossy, non-congested paths, but cap it so an
+// oversized configured rate cannot be amplified as aggressively as before.
+#define MAX_LOSS_COMPENSATION_PERCENT 110
+#define CONGESTION_LOSS_PERCENT 2
+#define CONGESTION_RTT_PERCENT 125
+
 // An unused reserved slot is returned to the group this long after its time
 #define RESV_STALE_NS (20 * NSEC_PER_MSEC)
 // Max lag of the group clock behind real time (token bucket depth)
@@ -16,8 +22,16 @@
 static u64 brutal_effective_rate(const struct brutal *brutal)
 {
     u64 rate = brutal->group ? READ_ONCE(brutal->group->rate) : brutal->rate;
+    u64 compensated, ceiling;
 
-    return div_u64(rate * 100, brutal->ack_rate);
+    // Loss plus queue growth is treated as congestion, not random loss. In
+    // that state keep pacing at the configured rate instead of adding traffic.
+    if (brutal->stats && READ_ONCE(brutal->stats->congestion_limited))
+        return rate;
+
+    compensated = div_u64(rate * 100, brutal->ack_rate);
+    ceiling = div_u64(rate * MAX_LOSS_COMPENSATION_PERCENT, 100);
+    return min_t(u64, compensated, ceiling);
 }
 
 // Account from TCP's own payload counters. The last flush is on CA release,
@@ -63,7 +77,7 @@ void brutal_update_rate(struct sock *sk)
     u32 acked = 0, losses = 0;
     u32 ack_rate; // Scaled by 100 (100=1.00) as kernel doesn't support float
     u64 rate, bdp, cwnd;
-    u32 cwnd_gain;
+    u32 cwnd_gain, rtt_us, base_rtt_us, samples;
 
     for (int i = 0; i < PKT_INFO_SLOTS; i++)
     {
@@ -73,22 +87,40 @@ void brutal_update_rate(struct sock *sk)
             losses += brutal->slots[i].losses;
         }
     }
-    if (acked + losses < MIN_PKT_INFO_SAMPLES)
+    samples = acked + losses;
+    if (samples < MIN_PKT_INFO_SAMPLES)
         ack_rate = 100;
     else
     {
-        ack_rate = acked * 100 / (acked + losses);
+        ack_rate = acked * 100 / samples;
         if (ack_rate < MIN_ACK_RATE_PERCENT)
             ack_rate = MIN_ACK_RATE_PERCENT;
     }
     brutal->ack_rate = ack_rate;
 
+    rtt_us = tp->srtt_us >> 3;
+    base_rtt_us = rtt_us;
+    if (brutal->stats && rtt_us)
+    {
+        if (!brutal->stats->min_rtt_us || rtt_us < brutal->stats->min_rtt_us)
+            brutal->stats->min_rtt_us = rtt_us;
+        base_rtt_us = brutal->stats->min_rtt_us;
+
+        // Random loss alone may still be compensated. Suppress compensation
+        // only when loss is accompanied by clear queue/RTT inflation.
+        WRITE_ONCE(brutal->stats->congestion_limited,
+                   samples >= MIN_PKT_INFO_SAMPLES &&
+                       (u64)losses * 100 >= (u64)samples * CONGESTION_LOSS_PERCENT &&
+                       (u64)rtt_us * 100 >= (u64)base_rtt_us * CONGESTION_RTT_PERCENT);
+    }
+
     rate = brutal_effective_rate(brutal);
     cwnd_gain = brutal->group ? READ_ONCE(brutal->group->cwnd_gain) : brutal->cwnd_gain;
 
-    // Packets in flight over one RTT at this rate, times the gain. Done in u64
-    // with a microsecond RTT (floored at 1 ms) so short RTTs keep precision
-    bdp = mul_u64_u64_div_u64(rate, max_t(u32, tp->srtt_us >> 3, USEC_PER_MSEC), USEC_PER_SEC);
+    // Size inflight from the minimum observed SRTT rather than the current
+    // queue-inflated SRTT. This avoids growing cwnd merely because a bottleneck
+    // queue has already built up.
+    bdp = mul_u64_u64_div_u64(rate, max_t(u32, base_rtt_us, USEC_PER_MSEC), USEC_PER_SEC);
     cwnd = div_u64(bdp * cwnd_gain, 10 * tp->mss_cache);
 
     // In a group, cwnd and sk_pacing_rate are sized for the full group rate so
@@ -226,6 +258,7 @@ static void brutal_init(struct sock *sk)
         brutal->stats->sent = tp->bytes_sent;
         brutal->stats->acked = tp->bytes_acked;
         brutal->stats->retrans = tp->bytes_retrans;
+        brutal->stats->min_rtt_us = tp->srtt_us >> 3;
     }
 
     brutal_apply_port(sk, brutal);
