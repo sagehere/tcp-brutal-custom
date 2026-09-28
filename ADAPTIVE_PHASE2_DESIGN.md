@@ -47,12 +47,15 @@ Current starting parameters:
 - low-utilization trigger after a ceiling exists: delivered rate below 80% of that ceiling;
 - observed-loss correction: convert unique delivered rate back toward estimated wire-rate need;
 - adaptive headroom: 120%;
-- upward probe: +10% every 2 seconds;
-- probe hold: 1 second.
+- downward-ceiling confirmation: two consecutive sampling windows, using the higher safe estimate;
+- upward probe: +25% every 1 second;
+- probe hold: 500 ms.
 
 The first mismatch is judged against the configured rate. Once a ceiling exists, the configured rate is no longer used as a reason to keep shrinking the ceiling. Further reductions require either clear phase-one RTT congestion or delivery below 80% of the current ceiling.
 
-This prevents the controller from repeatedly concluding that a healthy 100 Mbps path is "too slow" merely because the user configured 500 Mbps.
+A single 500 ms window is not allowed to establish or lower a long-lived ceiling. Two consecutive downward samples are required, and the controller uses the higher safe estimate from those samples. This hysteresis was added after expanded matrix testing showed that one unlucky ACK/loss window could otherwise under-estimate a 100 Mbps path by roughly half.
+
+This prevents the controller from repeatedly concluding that a healthy 100 Mbps path is "too slow" merely because the user configured 500 Mbps, while also avoiding one-sample overreaction.
 
 ## Shared-group safety
 
@@ -125,3 +128,46 @@ This first Phase 2 implementation is intentionally conservative:
 - mobile networks, Wi-Fi, ACK compression, asymmetric paths and policers with large token buckets need additional validation.
 
 The next engineering step after CI is broader matrix testing across path capacities, RTTs, loss rates, and connection counts before considering merge into main.
+
+
+## Expanded matrix and dynamic validation
+
+A broader synthetic matrix was run after the initial implementation. It covered 20, 50, 100 and 500 Mbps path capacities, 0-10% random loss, and 20/100 ms delay.
+
+The first matrix exposed two controller issues:
+
+1. a single bad 500 ms sample could establish an excessively low ceiling;
+2. +10% probing every 2 seconds recovered too slowly after a path improved.
+
+After adding two-window confirmation and accelerating non-congested probing, the previously problematic cases were re-tested:
+
+| Path | Final goodput | Final/steady pacing |
+| --- | ---: | ---: |
+| 20 Mbps, 20 ms, 5% loss | 18.99 Mbps in confirmation run; 17.62 Mbps in later probe-tuning run | about 23-24 Mbps |
+| 100 Mbps, 20 ms, 5% loss | 95.27 Mbps | about 118.6 Mbps |
+| 100 Mbps, 20 ms, 10% loss | 95.00 Mbps | about 118.9 Mbps |
+| 100 Mbps, 100 ms, 5% loss | 90.48 Mbps | about 103 Mbps after probing |
+| 100 Mbps, 20 ms, 5% loss after final probe tuning | 95.16 Mbps | about 113.7 Mbps |
+
+The 20 Mbps runs show some random-loss variance in short tests, but the controller no longer collapses into the ~8-11 Mbps range observed before confirmation hysteresis was added.
+
+### Same-connection 100 -> 20 -> 100 Mbps transition
+
+One TCP connection was kept open while the synthetic path capacity changed from 100 Mbps to 20 Mbps and then back to 100 Mbps, with 20 ms delay and 5% random loss throughout.
+
+Observed behavior after final probe tuning:
+
+- before the drop: roughly 93-102 Mbps delivered;
+- after the drop: roughly 19-20 Mbps within a few seconds;
+- pacing converged to roughly 24 Mbps;
+- after capacity returned to 100 Mbps, delivered throughput recovered to about 67 Mbps after ~4-5 seconds, ~80 Mbps after ~5-6 seconds, and ~93 Mbps after ~6-7 seconds;
+- subsequent one-second delivered throughput remained roughly 91-99 Mbps;
+- pacing recovered from ~24 Mbps to ~114 Mbps in about 7 seconds.
+
+This is substantially faster than the earlier +10% / 2 second probe policy, which mathematically required more than 30 seconds to climb from roughly 20 Mbps back toward 100 Mbps.
+
+## Current merge-readiness assessment
+
+The controller now behaves well across the targeted synthetic cases and dynamic capacity changes tested on `kr`. Remaining risk is concentrated in real-world path signatures that synthetic `netem` does not reproduce exactly, especially cellular/Wi-Fi variability, large-token-bucket policers, strong ACK compression and asymmetric congestion.
+
+Before a production release, the preferred next step is a canary/real-network validation rather than further tuning solely against synthetic loss.
