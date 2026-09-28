@@ -27,14 +27,14 @@ import (
 )
 
 const (
-	configDir         = "/etc/tcp-brutal-custom"
-	dataDir           = "/var/lib/tcp-brutal-custom"
-	socketPath        = "/run/tcp-brutal-custom/manager.sock"
-	portsPath         = "/proc/net/tcp_brutal/ports"
-	panelPasswordFile = "/etc/tcp-brutal-custom/panel-password"
+	configDir         = "/etc/tcp-brutal-canary"
+	dataDir           = "/var/lib/tcp-brutal-canary"
+	socketPath        = "/run/tcp-brutal-canary/manager.sock"
+	portsPath         = "/proc/net/tcp_brutal_canary/ports"
+	panelPasswordFile = "/etc/tcp-brutal-canary/panel-password"
 )
 
-var version = "2.1.9-dev"
+var version = "2.1.9-canary-dev"
 
 type portConfig struct {
 	Port     uint16  `json:"port"`
@@ -268,7 +268,7 @@ type publicWebConfig struct {
 }
 
 func loadPublicWebConfig() (publicWebConfig, error) {
-	b, err := os.ReadFile("/run/tcp-brutal-custom/panel.json")
+	b, err := os.ReadFile("/run/tcp-brutal-canary/panel.json")
 	if err != nil {
 		return publicWebConfig{}, err
 	}
@@ -278,7 +278,7 @@ func loadPublicWebConfig() (publicWebConfig, error) {
 }
 
 func writePublicWebConfig(c config, gid int) error {
-	p := "/run/tcp-brutal-custom/panel.json"
+	p := "/run/tcp-brutal-canary/panel.json"
 	b, err := json.Marshal(publicWebConfig{c.WebHost, c.WebPort, c.AllowedIPs})
 	if err != nil {
 		return err
@@ -363,13 +363,13 @@ func runCLI(args []string) error {
 			return restore(args[1])
 		}
 	case "install":
-		cmd := exec.Command("/usr/local/lib/tcp-brutal-custom/install.sh", "install")
+		cmd := exec.Command("/usr/local/lib/tcp-brutal-canary/install-canary.sh", "install")
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		return cmd.Run()
 	case "uninstall":
-		out, err := exec.Command("systemctl", "start", "--no-block", "tcp-brutal-custom-uninstall.service").CombinedOutput()
+		out, err := exec.Command("systemctl", "start", "--no-block", "tcp-brutal-canary-uninstall.service").CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
 		}
@@ -504,7 +504,7 @@ func panelManagementMenu() error {
 
 func menu() error {
 	for {
-		fmt.Printf("TCP Brutal Custom    v%s\n\n1  安装\n2  查看状态\n3  查看接管端口\n4  新增接管端口\n5  删除接管端口\n6  检查并升级\n7  开启开机启动\n8  关闭开机启动\n9  面板管理\n10 卸载\n11 备份配置\n12 恢复配置\n0  退出\n\n", version)
+		fmt.Printf("TCP Brutal Canary    v%s\n\n1  安装\n2  查看状态\n3  查看接管端口\n4  新增接管端口\n5  删除接管端口\n6  检查并升级\n7  开启开机启动\n8  关闭开机启动\n9  面板管理\n10 卸载\n11 备份配置\n12 恢复配置\n0  退出\n\n", version)
 		var choice, port, rate string
 		fmt.Print("请选择操作: ")
 		fmt.Scanln(&choice)
