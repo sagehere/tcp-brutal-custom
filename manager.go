@@ -671,29 +671,6 @@ func (m *manager) resetPassword(w http.ResponseWriter, r *http.Request) {
 	jsonReply(w, 200, map[string]string{"password": password})
 }
 
-func (m *manager) resetPassword(w http.ResponseWriter, r *http.Request) {
-	password, err := randomToken(18)
-	if err != nil {
-		bad(w, 500, err)
-		return
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	next := m.cfg
-	if err = setPassword(&next, password); err != nil {
-		bad(w, 500, err)
-		return
-	}
-	if err = saveConfig(next); err != nil {
-		bad(w, 500, err)
-		return
-	}
-	m.cfg = next
-	m.sessions = map[string]session{}
-	m.history.addEvent("password_reset", map[string]bool{"reset": true})
-	jsonReply(w, 200, map[string]string{"password": password})
-}
-
 func (m *manager) settings(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Host       string   `json:"host"`
