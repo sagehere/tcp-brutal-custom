@@ -226,7 +226,7 @@ func (m *manager) applyPort(p portConfig) error {
 	if err := writePort(fmt.Sprintf("add %d rate=%d gain=%d", p.Port, rate, p.Gain)); err != nil {
 		return err
 	}
-	if err := m.selector.Enable(p.Port); err != nil {
+	if err := m.selector.Enable(p.Port, 100); err != nil {
 		return err
 	}
 	return nil
@@ -237,7 +237,7 @@ func (m *manager) disablePort(port uint16) error {
 		return err
 	}
 	if err := writePort(fmt.Sprintf("del %d", port)); err != nil {
-		m.selector.Enable(port)
+		m.selector.Enable(port, 100)
 		return err
 	}
 	return nil
@@ -268,7 +268,7 @@ func (m *manager) collect(ctx context.Context) {
 						continue
 					}
 				}
-				x := sample{Time: now, Port: p.Port, Group: p.Group, Sent: p.Sent, Acked: p.Acked, Retrans: p.Retrans, Success: c.Success, Failure: c.Failure, Members: p.Members, RTTSum: p.RTTSum, RTTSamples: p.RTTSamples, RTTMax: p.RTTMax}
+				x := sample{Time: now, Port: p.Port, Group: p.Group, Sent: p.Sent, Acked: p.Acked, Retrans: p.Retrans, Success: c.Success(), Failure: c.Failure, Members: p.Members, RTTSum: p.RTTSum, RTTSamples: p.RTTSamples, RTTMax: p.RTTMax}
 				if err = m.history.record(x); err != nil {
 					log.Printf("history: %v", err)
 				}
