@@ -32,7 +32,7 @@ const (
 	portsPath  = "/proc/net/tcp_brutal/ports"
 )
 
-var version = "2.1.7-dev"
+var version = "2.1.8-dev"
 
 type portConfig struct {
 	Port     uint16  `json:"port"`
@@ -329,9 +329,9 @@ func runCLI(args []string) error {
 
 func menu() error {
 	for {
-		fmt.Printf("TCP Brutal Custom    v%s\n1 Install\n2 Status\n3 Ports\n4 Add port\n5 Delete port\n6 Update\n7 Autostart on\n8 Autostart off\n9 Panel settings\n10 Uninstall\n11 Backup\n12 Restore\n0 Exit\n", version)
+		fmt.Printf("TCP Brutal Custom    v%s\n\n1  安装\n2  查看状态\n3  查看接管端口\n4  新增接管端口\n5  删除接管端口\n6  检查并升级\n7  开启开机启动\n8  关闭开机启动\n9  面板设置\n10 卸载\n11 备份配置\n12 恢复配置\n0  退出\n\n", version)
 		var choice, port, rate, host, allow string
-		fmt.Print("> ")
+		fmt.Print("请选择操作: ")
 		fmt.Scanln(&choice)
 		var err error
 		switch choice {
@@ -344,13 +344,13 @@ func menu() error {
 		case "3":
 			err = runCLI([]string{"ports"})
 		case "4":
-			fmt.Print("Port: ")
+			fmt.Print("请输入端口: ")
 			fmt.Scanln(&port)
-			fmt.Print("Mbps: ")
+			fmt.Print("请输入目标速率 Mbps: ")
 			fmt.Scanln(&rate)
 			err = runCLI([]string{"port", "add", port, rate})
 		case "5":
-			fmt.Print("Port: ")
+			fmt.Print("请输入要删除的端口: ")
 			fmt.Scanln(&port)
 			err = runCLI([]string{"port", "del", port})
 		case "6":
@@ -360,11 +360,11 @@ func menu() error {
 		case "8":
 			err = runCLI([]string{"autostart", "off"})
 		case "9":
-			fmt.Print("Listen IP: ")
+			fmt.Print("监听 IP: ")
 			fmt.Scanln(&host)
-			fmt.Print("Web port: ")
+			fmt.Print("面板端口: ")
 			fmt.Scanln(&port)
-			fmt.Print("Allowed IPs, comma-separated (enter - for any): ")
+			fmt.Print("允许访问的 IP（逗号分隔，输入 - 表示不限制）: ")
 			fmt.Scanln(&allow)
 			err = runCLI([]string{"panel", host, port, allow})
 		case "10":
@@ -372,14 +372,14 @@ func menu() error {
 		case "11":
 			err = runCLI([]string{"backup"})
 		case "12":
-			fmt.Print("Backup filename: ")
+			fmt.Print("请输入备份文件名: ")
 			fmt.Scanln(&port)
 			err = runCLI([]string{"restore", port})
 		default:
-			err = errors.New("unknown choice")
+			err = errors.New("无效选项")
 		}
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
+			fmt.Fprintln(os.Stderr, "操作失败:", err)
 		}
 	}
 }
