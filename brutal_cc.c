@@ -27,6 +27,7 @@
 #define ADAPTIVE_PROBE_PERCENT 110
 #define ADAPTIVE_PROBE_INTERVAL_US (2 * USEC_PER_SEC)
 #define ADAPTIVE_PROBE_HOLD_US (1 * USEC_PER_SEC)
+#define ADAPTIVE_CONFIRM_SAMPLES 2
 
 // An unused reserved slot is returned to the group this long after its time
 #define RESV_STALE_NS (20 * NSEC_PER_MSEC)
@@ -144,6 +145,8 @@ static void brutal_update_adaptive(struct sock *sk, const struct rate_sample *rs
         else
             WRITE_ONCE(st->adaptive_ceiling, max(probed, ceiling + 1));
         st->last_probe_us = now;
+        st->candidate_ceiling = 0;
+        st->candidate_samples = 0;
         ceiling = READ_ONCE(st->adaptive_ceiling);
     }
 
@@ -199,11 +202,31 @@ static void brutal_update_adaptive(struct sock *sk, const struct rate_sample *rs
                              max_t(u32, 100 - st->recent_loss_percent, MIN_ACK_RATE_PERCENT));
             target = div_u64(target * ADAPTIVE_HEADROOM_PERCENT, 100);
             target = clamp_t(u64, target, MIN_PACING_RATE, configured);
-            ceiling = READ_ONCE(st->adaptive_ceiling);
-            if (!ceiling || target < ceiling)
-                WRITE_ONCE(st->adaptive_ceiling, target);
-            st->last_probe_us = now;
+
+            // Never let one unlucky 500 ms ACK/loss window determine the
+            // long-lived pacing ceiling. Require two consecutive downward
+            // samples and use the higher estimate from those samples.
+            if (!st->candidate_samples)
+                st->candidate_ceiling = target;
+            else
+                st->candidate_ceiling = max(st->candidate_ceiling, target);
+            st->candidate_samples++;
+
+            if (st->candidate_samples >= ADAPTIVE_CONFIRM_SAMPLES)
+            {
+                ceiling = READ_ONCE(st->adaptive_ceiling);
+                if (!ceiling || st->candidate_ceiling < ceiling)
+                    WRITE_ONCE(st->adaptive_ceiling, st->candidate_ceiling);
+                st->last_probe_us = now;
+                st->candidate_ceiling = 0;
+                st->candidate_samples = 0;
+            }
         }
+    }
+    else
+    {
+        st->candidate_ceiling = 0;
+        st->candidate_samples = 0;
     }
 
     if (loss_signal)

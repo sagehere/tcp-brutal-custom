@@ -72,11 +72,13 @@ struct brutal_stats_state
     u64 sample_start_acked;
     u64 sample_start_us;
     u64 last_probe_us;
+    u64 candidate_ceiling;
 
     u32 min_rtt_us;
     u8 recent_loss_percent;
     u8 congestion_limited;
     u8 sample_active;
+    u8 candidate_samples;
 };
 
 // Per-socket state, lives in icsk_ca_priv
