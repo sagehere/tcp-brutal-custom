@@ -266,14 +266,30 @@ func (m *manager) applyABPort(p abPortConfig) error {
 			return fmt.Errorf("port %d is already configured as canary-only", p.Port)
 		}
 	}
-	rate := uint64(p.RateMbps*1e6/8 + 0.5)
-	cmd := fmt.Sprintf("add %d rate=%d gain=%d", p.Port, rate, p.Gain)
-	if err := writeBaselinePort(cmd); err != nil {
-		return fmt.Errorf("baseline group: %w", err)
+	totalRate := uint64(p.RateMbps*1e6/8 + 0.5)
+	canaryRate := totalRate * uint64(p.CanaryPercent) / 100
+	baselineRate := totalRate - canaryRate
+	minRate := uint64(500000 / 8) // 0.5 Mbps, matches kernel MIN_PACING_RATE.
+	if p.CanaryPercent > 0 && canaryRate < minRate {
+		return fmt.Errorf("canary share is below the 0.5 Mbps kernel minimum; increase total rate or canary percentage")
 	}
-	if err := writePort(cmd); err != nil {
-		_ = writeBaselinePort(fmt.Sprintf("del %d", p.Port))
-		return fmt.Errorf("canary group: %w", err)
+	if p.CanaryPercent < 100 && baselineRate < minRate {
+		return fmt.Errorf("baseline share is below the 0.5 Mbps kernel minimum; increase total rate or reduce canary percentage")
+	}
+	if baselineRate > 0 {
+		if err := writeBaselinePort(fmt.Sprintf("add %d rate=%d gain=%d", p.Port, baselineRate, p.Gain)); err != nil {
+			return fmt.Errorf("baseline group: %w", err)
+		}
+	} else if err := writeBaselinePort(fmt.Sprintf("del %d", p.Port)); err != nil {
+		return fmt.Errorf("disable baseline group: %w", err)
+	}
+	if canaryRate > 0 {
+		if err := writePort(fmt.Sprintf("add %d rate=%d gain=%d", p.Port, canaryRate, p.Gain)); err != nil {
+			_ = writeBaselinePort(fmt.Sprintf("del %d", p.Port))
+			return fmt.Errorf("canary group: %w", err)
+		}
+	} else if err := writePort(fmt.Sprintf("del %d", p.Port)); err != nil {
+		return fmt.Errorf("disable canary group: %w", err)
 	}
 	if err := m.selector.Enable(p.Port, p.CanaryPercent); err != nil {
 		_ = writePort(fmt.Sprintf("del %d", p.Port))
@@ -773,15 +789,15 @@ func (m *manager) changeAB(w http.ResponseWriter, r *http.Request) {
 		bad(w, 400, errors.New("invalid canary percentage"))
 		return
 	}
-	if err = m.selector.Enable(port, in.CanaryPercent); err != nil {
-		bad(w, 500, err)
-		return
-	}
 	next := m.cfg
 	next.ABPorts = append([]abPortConfig(nil), m.cfg.ABPorts...)
 	next.ABPorts[idx].CanaryPercent = in.CanaryPercent
+	if err = m.applyABPort(next.ABPorts[idx]); err != nil {
+		bad(w, 500, err)
+		return
+	}
 	if err = saveConfig(next); err != nil {
-		_ = m.selector.Enable(port, previous.CanaryPercent)
+		_ = m.applyABPort(previous)
 		bad(w, 500, err)
 		return
 	}
