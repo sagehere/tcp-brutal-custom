@@ -486,3 +486,14 @@ bash scripts/publish-release.sh vX.Y.Z /path/to/release-signing-key.pem build
 GPL-3.0，详见 [LICENSE](LICENSE)。
 
 上游 TCP Brutal 代码以及本项目的修改版本均继续受 GPL-3.0 和对应署名要求约束。
+
+
+## 无感维护行为
+
+升级和卸载采用“先排空、后切换”的维护方式。系统会先停止新的自动 Brutal 接管，但**不会主动断开已有 TCP 连接**；已经使用 Brutal 的连接会继续运行，直到自然关闭。
+
+排空期间，新建立且原本应匹配 Brutal 的连接会临时使用系统默认 TCP 拥塞控制；旧模块不再被任何 socket 使用后，系统自动完成模块切换，并恢复原有端口规则和目标 IP 规则。
+
+`tbc2 uninstall` 会启动后台 systemd 卸载任务并立即返回，因此即使当前 SSH 会话本身正在使用 Brutal，也不会出现“卸载等待 SSH 断开，而 SSH 又等待卸载命令返回”的死锁。
+
+如果某个应用存在超长连接，或者持续主动执行 `TCP_CONGESTION=brutal` 创建新 socket，排空会一直保持等待，直到这些连接结束。
