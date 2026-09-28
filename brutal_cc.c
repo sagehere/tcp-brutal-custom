@@ -241,7 +241,8 @@ void brutal_update_rate(struct sock *sk, const struct rate_sample *rs)
     }
     brutal->ack_rate = ack_rate;
     if (brutal->stats)
-        brutal->stats->recent_loss_percent = samples ? min_t(u32, losses * 100 / samples, 100) : 0;
+        brutal->stats->recent_loss_percent =
+            samples ? min_t(u64, (u64)losses * 100 / samples, 100) : 0;
 
     rtt_us = tp->srtt_us >> 3;
     base_rtt_us = rtt_us;
