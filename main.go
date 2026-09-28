@@ -327,6 +327,52 @@ func localRequest(method, path string, body io.Reader) error {
 	return nil
 }
 
+func localDownload(path, destination string) error {
+	req, err := http.NewRequest(http.MethodGet, "http://unix"+path, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := client().Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 65536))
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	dir := filepath.Dir(destination)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".ab-report-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err = io.Copy(tmp, io.LimitReader(resp.Body, 1<<30)); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err = tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err = tmp.Close(); err != nil {
+		return err
+	}
+	if err = os.Rename(name, destination); err != nil {
+		return err
+	}
+	fmt.Println(destination)
+	return nil
+}
+
 func resetPanelPasswordCLI() error {
 	resp, err := client().Post("http://unix/api/v1/password/reset", "application/json", strings.NewReader("{}"))
 	if err != nil {
@@ -415,6 +461,46 @@ func runCLI(args []string) error {
 			return localRequest("POST", "/api/v1/ports", strings.NewReader(string(b)))
 		}
 	case "ab":
+		if len(args) >= 3 && args[1] == "summary" {
+			port, e := strconv.ParseUint(args[2], 10, 16)
+			if e != nil || port == 0 {
+				return errors.New("invalid port")
+			}
+			to := time.Now().Unix()
+			from := to - 24*3600
+			if len(args) == 5 {
+				from, e = strconv.ParseInt(args[3], 10, 64)
+				if e != nil {
+					return e
+				}
+				to, e = strconv.ParseInt(args[4], 10, 64)
+				if e != nil {
+					return e
+				}
+			}
+			path := fmt.Sprintf("/api/v1/ab/summary?port=%d&from=%d&to=%d", port, from, to)
+			return localRequest("GET", path, nil)
+		}
+		if len(args) >= 4 && args[1] == "export" {
+			port, e := strconv.ParseUint(args[2], 10, 16)
+			if e != nil || port == 0 {
+				return errors.New("invalid port")
+			}
+			to := time.Now().Unix()
+			from := to - 24*3600
+			if len(args) == 6 {
+				from, e = strconv.ParseInt(args[4], 10, 64)
+				if e != nil {
+					return e
+				}
+				to, e = strconv.ParseInt(args[5], 10, 64)
+				if e != nil {
+					return e
+				}
+			}
+			path := fmt.Sprintf("/api/v1/ab/report?port=%d&from=%d&to=%d&tier=minute", port, from, to)
+			return localDownload(path, args[3])
+		}
 		if len(args) == 2 && args[1] == "list" {
 			return localRequest("GET", "/api/v1/ab", nil)
 		}
@@ -497,7 +583,7 @@ func runCLI(args []string) error {
 			return localRequest("PUT", "/api/v1/autostart", strings.NewReader(string(b)))
 		}
 	}
-	return errors.New("usage: tbc2-canary [status|ports|port add PORT Mbps [gain=20]|port del PORT|ab list|ab add PORT Mbps PERCENT [gain=20]|ab set PORT PERCENT|ab del PORT|password ...]")
+	return errors.New("usage: tbc2-canary [status|ports|port add ...|ab list|ab add PORT Mbps PERCENT|ab set PORT PERCENT|ab del PORT|ab summary PORT [FROM TO]|ab export PORT FILE [FROM TO]|password ...]")
 }
 
 func panelManagementMenu() error {
