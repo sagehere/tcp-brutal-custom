@@ -32,6 +32,7 @@ const (
 	socketPath        = "/run/tcp-brutal-canary/manager.sock"
 	portsPath         = "/proc/net/tcp_brutal_canary/ports"
 	baselinePortsPath = "/proc/net/tcp_brutal/ports"
+	baselineConfigPath = "/etc/tcp-brutal-custom/config.json"
 	panelPasswordFile = "/etc/tcp-brutal-canary/panel-password"
 )
 
