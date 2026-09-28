@@ -89,7 +89,7 @@ curl -fsSL https://raw.githubusercontent.com/sagehere/tcp-brutal-custom/main/scr
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sagehere/tcp-brutal-custom/main/scripts/bootstrap.sh | \
-  sudo env TCP_BRUTAL_RELEASE_TAG=v2.1.6 bash
+  sudo env TCP_BRUTAL_RELEASE_TAG=v2.1.7 bash
 ```
 
 > **首次安装的信任边界：** `bootstrap.sh` 本身仍来自本 GitHub 仓库。如果你的威胁模型包含“首次安装前整个 GitHub 仓库/账号已经被接管”，仍应通过独立可信渠道核对下方公钥指纹后再授予 root 权限。安装成功后公钥会固定在本机，后续普通更新不会重新从 GitHub 建立信任根。
@@ -355,7 +355,7 @@ Web 面板只能检查版本和查看发布说明，不能启动维护升级。�
 
 1. 准备新版本；
 2. 停止管理服务；
-3. 主动断开受管端口上的 TCP 连接；
+3. 停止新的 Brutal 自动接管，但不主动断开现有 TCP 连接；等待旧连接自然结束后再切换模块；
 4. 卸载当前 `brutal` 模块；
 5. 安装并切换新的 DKMS 模块和程序；
 6. 重新加载模块并启动服务。
