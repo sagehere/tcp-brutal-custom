@@ -38,6 +38,8 @@ func buildABReport(h *history, port uint16, from, to int64, tier string) ([]byte
 	if err != nil {
 		return nil, err
 	}
+	policy := defaultABAnalysisPolicy()
+	comparisons := buildABComparisons(summaries, policy)
 	appSamples, err := h.abAppSamples(tier, port, from, to)
 	if err != nil {
 		return nil, err
@@ -144,6 +146,56 @@ func buildABReport(h *history, port uint16, from, to int64, tier string) ([]byte
 	b, err = csvBytes([]string{"epoch_id","port","cohort","canary_percent","duration_seconds","member_seconds","sent_bytes","acked_bytes","retrans_bytes","assigned_connections","selector_failures","rtt_samples","mean_rtt_ms","max_rtt_ms","retrans_percent","goodput_mbps","goodput_per_member_mbps","app_requests","app_success","app_errors","app_success_percent","app_mean_latency_ms","app_max_latency_ms","gap_samples"}, summaryRows)
 	if err != nil { zw.Close(); return nil, err }
 	if err = writeFile("summary.csv", b); err != nil { zw.Close(); return nil, err }
+
+	var comparisonRows [][]string
+	for _, x := range comparisons {
+		comparisonRows = append(comparisonRows, []string{
+			strconv.FormatInt(x.EpochID,10),strconv.Itoa(int(x.Port)),strconv.Itoa(int(x.CanaryPercent)),
+			strconv.FormatUint(x.DurationSeconds,10),strconv.FormatUint(x.BaselineConnections,10),strconv.FormatUint(x.CanaryConnections,10),
+			strconv.FormatUint(x.SelectorFailures,10),strconv.FormatFloat(x.ActualCanaryPercent,'f',4,64),
+			strconv.FormatFloat(x.AllocationErrorPP,'f',4,64),strconv.FormatFloat(x.AllocationZ,'f',4,64),
+			strconv.FormatFloat(x.BaselineRetransPercent,'f',6,64),strconv.FormatFloat(x.CanaryRetransPercent,'f',6,64),
+			strconv.FormatFloat(x.RetransDeltaPP,'f',6,64),strconv.FormatFloat(x.BaselineMeanRTTMS,'f',4,64),
+			strconv.FormatFloat(x.CanaryMeanRTTMS,'f',4,64),strconv.FormatFloat(x.MeanRTTDeltaPercent,'f',4,64),
+			strconv.FormatFloat(x.BaselineGoodputPerMember,'f',6,64),strconv.FormatFloat(x.CanaryGoodputPerMember,'f',6,64),
+			strconv.FormatFloat(x.GoodputPerMemberDeltaPct,'f',4,64),strconv.FormatUint(x.BaselineAppRequests,10),
+			strconv.FormatUint(x.CanaryAppRequests,10),strconv.FormatFloat(x.BaselineAppSuccessPercent,'f',6,64),
+			strconv.FormatFloat(x.CanaryAppSuccessPercent,'f',6,64),strconv.FormatFloat(x.AppSuccessDeltaPP,'f',6,64),
+			strconv.FormatFloat(x.BaselineAppMeanLatencyMS,'f',4,64),strconv.FormatFloat(x.CanaryAppMeanLatencyMS,'f',4,64),
+			strconv.FormatFloat(x.AppMeanLatencyDeltaPct,'f',4,64),strconv.FormatBool(x.NetworkReady),
+			strconv.FormatBool(x.ApplicationReady),strings.Join(x.Reasons," | "),
+		})
+	}
+	b, err = csvBytes([]string{"epoch_id","port","canary_percent","duration_seconds","baseline_connections","canary_connections",
+		"selector_failures","actual_canary_percent","allocation_error_pp","allocation_z","baseline_retrans_percent",
+		"canary_retrans_percent","retrans_delta_pp","baseline_mean_rtt_ms","canary_mean_rtt_ms","mean_rtt_delta_percent",
+		"baseline_goodput_per_member_mbps","canary_goodput_per_member_mbps","goodput_per_member_delta_percent",
+		"baseline_app_requests","canary_app_requests","baseline_app_success_percent","canary_app_success_percent",
+		"app_success_delta_pp","baseline_app_mean_latency_ms","canary_app_mean_latency_ms","app_mean_latency_delta_percent",
+		"network_ready","application_ready","reasons"}, comparisonRows)
+	if err != nil { zw.Close(); return nil, err }
+	if err = writeFile("comparison.csv", b); err != nil { zw.Close(); return nil, err }
+
+	plan, _ := json.MarshalIndent(map[string]any{
+		"policy": policy,
+		"comparison_semantics": map[string]string{
+			"retrans_delta_pp": "canary retransmission percent minus baseline, percentage points",
+			"mean_rtt_delta_percent": "relative canary-vs-baseline change; negative is lower RTT",
+			"goodput_per_member_delta_percent": "relative canary-vs-baseline change; interpret only when allocation is healthy",
+			"app_success_delta_pp": "canary application success percent minus baseline, percentage points",
+			"app_mean_latency_delta_percent": "relative canary-vs-baseline change; negative is lower latency",
+		},
+		"statistical_plan": []string{
+			"Use only network_ready epochs for network inference and application_ready epochs for application inference.",
+			"Never pool epochs with different percentage, rate, gain, or code version.",
+			"Use simultaneous within-epoch baseline/canary comparisons to control for time-varying path conditions.",
+			"For network time-series metrics, use minute-level paired differences and a time-block bootstrap (recommended block length 5 minutes).",
+			"For application success, report cohort rates with Wilson intervals and the difference in rates; if repeated decisions are made, predefine stage windows instead of repeatedly peeking at p-values.",
+			"For latency percentiles, ingest application-side histograms in a future schema extension; current schema supports mean and max only.",
+			"Treat selector failures, data gaps, and randomization imbalance as validity failures, not algorithm performance.",
+		},
+	}, "", "  ")
+	if err = writeFile("analysis_plan.json", plan); err != nil { zw.Close(); return nil, err }
 
 	analysis := map[string]any{
 		"generated_at": time.Now().UTC().Format(time.RFC3339),
