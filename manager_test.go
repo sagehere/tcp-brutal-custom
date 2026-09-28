@@ -47,12 +47,12 @@ func TestSendBytesAndConnectionParsing(t *testing.T) {
 			t.Fatalf("sendBytes(%d,%d)=%d,%d", tc.sent, tc.retrans, expected, actual)
 		}
 	}
-	output := "ESTAB 0 0 192.0.2.1:443 198.51.100.4:50000 brutal wscale:7,7\n" +
+	output := "ESTAB 0 0 192.0.2.1:443 198.51.100.4:50000 brutal_adaptive wscale:7,7\n" +
 		"ESTAB 0 0 [2001:db8::1]:443 [2001:db8::2]:50001 cubic wscale:7,7\n" +
 		"ESTAB 0 0 192.0.2.1:443 198.51.100.4:50002 brutal\n" +
 		"TIME-WAIT 0 0 192.0.2.1:443 198.51.100.4:50003\n"
 	rows, err := parseConnections([]byte(output), 443)
-	if err != nil || len(rows) != 3 || !rows[0].Managed || rows[1].Managed || rows[1].ClientIP != "2001:db8::2" || rows[2].ClientPort != 50002 {
+	if err != nil || len(rows) != 3 || !rows[0].Managed || rows[1].Managed || rows[2].Managed || rows[1].ClientIP != "2001:db8::2" || rows[2].ClientPort != 50002 {
 		t.Fatalf("connections=%+v %v", rows, err)
 	}
 	rows, err = parseConnections(nil, 443)
