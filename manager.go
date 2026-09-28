@@ -781,6 +781,9 @@ func (m *manager) putAB(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m.cfg = next
+	if _, err := m.history.beginABEpoch(p, "ab_add"); err != nil {
+		log.Printf("A/B epoch start %d: %v", p.Port, err)
+	}
 	m.history.addEvent("ab_add", p)
 	jsonReply(w, 200, p)
 }
@@ -821,6 +824,9 @@ func (m *manager) changeAB(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		m.cfg = next
+		if err := m.history.closeABEpoch(port, "ab_delete"); err != nil {
+			log.Printf("A/B epoch close %d: %v", port, err)
+		}
 		m.history.addEvent("ab_delete", previous)
 		jsonReply(w, 200, map[string]any{"deleted": port})
 		return
@@ -845,6 +851,9 @@ func (m *manager) changeAB(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m.cfg = next
+	if _, err := m.history.beginABEpoch(next.ABPorts[idx], "percentage_change"); err != nil {
+		log.Printf("A/B epoch change %d: %v", port, err)
+	}
 	m.history.addEvent("ab_percent", map[string]any{"port": port, "before": previous.CanaryPercent, "after": in.CanaryPercent})
 	jsonReply(w, 200, next.ABPorts[idx])
 }
