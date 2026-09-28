@@ -30,6 +30,11 @@ func TestManagerRoutesRegisterWithoutConflict(t *testing.T) {
 	if connections.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated connections status=%d", connections.Code)
 	}
+	reset := httptest.NewRecorder()
+	h.ServeHTTP(reset, httptest.NewRequest(http.MethodPost, "/api/v1/password/reset", strings.NewReader("{}")))
+	if reset.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated password reset status=%d", reset.Code)
+	}
 }
 
 func TestSendBytesAndConnectionParsing(t *testing.T) {
