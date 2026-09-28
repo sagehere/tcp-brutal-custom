@@ -36,15 +36,15 @@ func newSelector() (_ *selector, err error) {
 			s.Close()
 		}
 	}()
-	s.ports, err = ebpf.NewMap(&ebpf.MapSpec{Name: "brutal_ports", Type: ebpf.Hash, KeySize: 4, ValueSize: 1, MaxEntries: 1024})
+	s.ports, err = ebpf.NewMap(&ebpf.MapSpec{Name: "btc_ports", Type: ebpf.Hash, KeySize: 4, ValueSize: 1, MaxEntries: 1024})
 	if err != nil {
 		return nil, fmt.Errorf("port map: %w", err)
 	}
-	s.host, err = ebpf.NewMap(&ebpf.MapSpec{Name: "brutal_netns", Type: ebpf.Array, KeySize: 4, ValueSize: 8, MaxEntries: 1})
+	s.host, err = ebpf.NewMap(&ebpf.MapSpec{Name: "btc_netns", Type: ebpf.Array, KeySize: 4, ValueSize: 8, MaxEntries: 1})
 	if err != nil {
 		return nil, fmt.Errorf("netns map: %w", err)
 	}
-	s.counts, err = ebpf.NewMap(&ebpf.MapSpec{Name: "brutal_counts", Type: ebpf.Array, KeySize: 4, ValueSize: 24, MaxEntries: 65536})
+	s.counts, err = ebpf.NewMap(&ebpf.MapSpec{Name: "btc_counts", Type: ebpf.Array, KeySize: 4, ValueSize: 24, MaxEntries: 65536})
 	if err != nil {
 		return nil, fmt.Errorf("counter map: %w", err)
 	}
@@ -62,7 +62,7 @@ func newSelector() (_ *selector, err error) {
 		return nil, err
 	}
 	s.program, err = ebpf.NewProgram(&ebpf.ProgramSpec{
-		Name: "brutal_port_select", Type: ebpf.SockOps, AttachType: ebpf.AttachCGroupSockOps,
+		Name: "btc_port_select", Type: ebpf.SockOps, AttachType: ebpf.AttachCGroupSockOps,
 		License: "GPL", Instructions: s.instructions(),
 	})
 	if err != nil {
@@ -99,13 +99,15 @@ func (s *selector) instructions() asm.Instructions {
 		asm.JEq.Imm(asm.R0, 0, "exit"),
 		asm.LoadMem(asm.R0, asm.R0, 0, asm.Byte),
 		asm.JEq.Imm(asm.R0, 0, "exit"),
-		asm.StoreImm(asm.RFP, -24, 0x74757262, asm.Word), // brut
-		asm.StoreImm(asm.RFP, -20, 0x006c61, asm.Word),   // al\0
+		asm.StoreImm(asm.RFP, -32, 0x74757262, asm.Word), // brut
+		asm.StoreImm(asm.RFP, -28, 0x615f6c61, asm.Word), // al_a
+		asm.StoreImm(asm.RFP, -24, 0x74706164, asm.Word), // dapt
+		asm.StoreImm(asm.RFP, -20, 0x00657669, asm.Word), // ive\0
 		asm.Mov.Reg(asm.R1, asm.R6),
 		asm.Mov.Imm(asm.R2, 6),  // IPPROTO_TCP
 		asm.Mov.Imm(asm.R3, 13), // TCP_CONGESTION
-		asm.Mov.Reg(asm.R4, asm.RFP), asm.Add.Imm(asm.R4, -24),
-		asm.Mov.Imm(asm.R5, 7),
+		asm.Mov.Reg(asm.R4, asm.RFP), asm.Add.Imm(asm.R4, -32),
+		asm.Mov.Imm(asm.R5, 16),
 		asm.FnSetsockopt.Call(),
 		asm.Mov.Reg(asm.R9, asm.R0),
 		asm.LoadMapPtr(asm.R1, s.counts.FD()),
