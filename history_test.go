@@ -139,12 +139,14 @@ func TestABHistoryEpochsAndReport(t *testing.T) {
 	if err != nil || epoch2 == epoch1 {
 		t.Fatalf("new epoch: %v %d", err, epoch2)
 	}
-	epochs, err := h.abEpochs(443, 1, time.Now().Unix()+10)
+	from := time.Now().Unix() - 3600
+	to := time.Now().Unix() + 10
+	epochs, err := h.abEpochs(443, from, to)
 	if err != nil || len(epochs) != 2 || epochs[0].Ended == 0 || epochs[1].CanaryPercent != 50 {
 		t.Fatalf("epochs=%+v err=%v", epochs, err)
 	}
 
-	report, err := buildABReport(h, 443, 1, time.Now().Unix()+10, "minute")
+	report, err := buildABReport(h, 443, from, to, "minute")
 	if err != nil {
 		t.Fatal(err)
 	}
