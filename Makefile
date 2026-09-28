@@ -8,8 +8,8 @@ TAR             ?= tar
 CLANG_FORMAT    ?= clang-format-18
 SRCS            := brutal.h brutal_cc.c brutal_sockopt.c brutal_rules.c brutal_ports.c tools/brutalctl.c tools/Makefile .clang-format
 FORMAT_SRCS     := $(filter %.c %.h,$(SRCS))
-obj-m           += brutal.o
-brutal-objs     := brutal_cc.o brutal_sockopt.o brutal_rules.o brutal_ports.o
+obj-m           += brutal_canary.o
+brutal_canary-objs := brutal_cc.o brutal_sockopt.o brutal_rules.o brutal_ports.o
 
 ccflags-y := -std=gnu99
 
@@ -35,10 +35,10 @@ clean: clean-dkms.conf clean-dkms-tarball
 		if [ -f "$keep" ]; then mv -f "$keep" go.mod; trap - EXIT HUP INT TERM; fi
 
 load:
-	sudo insmod brutal.ko
+	sudo insmod brutal_canary.ko
 
 unload:
-	sudo rmmod brutal
+	sudo rmmod brutal_canary
 
 .PHONY: format format-check
 format:

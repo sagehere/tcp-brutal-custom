@@ -23,13 +23,13 @@ pkgver() {
 PACKAGE_VERSION=${PACKAGE_VERSION:-$(pkgver)}
 
 cat << EOF
-PACKAGE_NAME="tcp-brutal-custom"
+PACKAGE_NAME="tcp-brutal-canary"
 PACKAGE_VERSION="$PACKAGE_VERSION"
 
 MAKE[0]="make KERNEL_DIR=\${kernel_source_dir} all"
 CLEAN="make KERNEL_DIR=\${kernel_source_dir} clean"
 
-BUILT_MODULE_NAME[0]="brutal"
+BUILT_MODULE_NAME[0]="brutal_canary"
 DEST_MODULE_LOCATION[0]="/extra"
 
 AUTOINSTALL="yes"

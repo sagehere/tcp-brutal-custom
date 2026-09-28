@@ -217,7 +217,7 @@ static int brutal_congestion_locked(struct sock *sk, sockptr_t optval, unsigned 
     release_sock(sk);
     if (!locked)
         return 0;
-    return strcmp(name, "brutal") ? -EPERM : 0;
+    return strcmp(name, BRUTAL_CC_NAME) ? -EPERM : 0;
 }
 
 static int brutal_tcp_setsockopt(struct sock *sk, int level, int optname, sockptr_t optval, unsigned int optlen)

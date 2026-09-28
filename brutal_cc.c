@@ -526,7 +526,7 @@ static u32 brutal_ssthresh(struct sock *sk)
 
 struct tcp_congestion_ops tcp_brutal_ops = {
     .flags = TCP_CONG_NON_RESTRICTED,
-    .name = "brutal",
+    .name = BRUTAL_CC_NAME,
     .owner = THIS_MODULE,
     .init = brutal_init,
     .release = brutal_release,
@@ -568,5 +568,5 @@ module_exit(brutal_unregister);
 
 MODULE_AUTHOR("The Hysteria Project");
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("TCP Brutal");
+MODULE_DESCRIPTION("TCP Brutal Adaptive Canary");
 MODULE_VERSION(__stringify(BRUTAL_VERSION_MAJOR) "." __stringify(BRUTAL_VERSION_MINOR) "." __stringify(BRUTAL_VERSION_PATCH));
