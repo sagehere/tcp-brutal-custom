@@ -226,6 +226,38 @@ func (h *history) prune() error {
 			}
 		}
 		if fi.Size() > 1<<30 {
+			for _, tier := range []string{"raw", "minute", "hour"} {
+				for fi.Size() > 1<<30 {
+					var removed int64
+					for _, table := range []string{"ab_samples", "ab_selector_samples", "ab_app_samples"} {
+						q := fmt.Sprintf("DELETE FROM %s WHERE rowid IN (SELECT rowid FROM %s WHERE tier=? ORDER BY ts LIMIT 100000)", table, table)
+						result, e := h.db.Exec(q, tier)
+						if e != nil {
+							return e
+						}
+						n, e := result.RowsAffected()
+						if e != nil {
+							return e
+						}
+						removed += n
+					}
+					if removed == 0 {
+						break
+					}
+					if _, e := h.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); e != nil {
+						return e
+					}
+					if _, e := h.db.Exec("VACUUM"); e != nil {
+						return e
+					}
+					fi, err = os.Stat(path)
+					if err != nil {
+						return err
+					}
+				}
+			}
+		}
+		if fi.Size() > 1<<30 {
 			return fmt.Errorf("history size limit could not be recovered")
 		}
 	}
