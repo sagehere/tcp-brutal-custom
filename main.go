@@ -27,10 +27,10 @@ import (
 )
 
 const (
-	configDir  = "/etc/tcp-brutal-custom"
-	dataDir    = "/var/lib/tcp-brutal-custom"
-	socketPath = "/run/tcp-brutal-custom/manager.sock"
-	portsPath  = "/proc/net/tcp_brutal/ports"
+	configDir         = "/etc/tcp-brutal-custom"
+	dataDir           = "/var/lib/tcp-brutal-custom"
+	socketPath        = "/run/tcp-brutal-custom/manager.sock"
+	portsPath         = "/proc/net/tcp_brutal/ports"
 	panelPasswordFile = "/etc/tcp-brutal-custom/panel-password"
 )
 
