@@ -627,18 +627,27 @@ func (m *manager) changePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	next := m.cfg
 	if err := setPassword(&next, in.Password); err != nil {
+		m.mu.Unlock()
 		bad(w, 400, err)
 		return
 	}
+	if err := savePanelPassword(in.Password); err != nil {
+		m.mu.Unlock()
+		bad(w, 500, err)
+		return
+	}
 	if err := saveConfig(next); err != nil {
+		os.Remove(panelPasswordFile)
+		m.mu.Unlock()
 		bad(w, 500, err)
 		return
 	}
 	m.cfg = next
 	m.sessions = map[string]session{}
+	m.attempts = map[string]attempt{}
+	m.mu.Unlock()
 	m.history.addEvent("password_change", map[string]bool{"changed": true})
 	jsonReply(w, 200, map[string]bool{"changed": true})
 }
@@ -656,7 +665,13 @@ func (m *manager) resetPassword(w http.ResponseWriter, r *http.Request) {
 		bad(w, 500, err)
 		return
 	}
+	if err = savePanelPassword(password); err != nil {
+		m.mu.Unlock()
+		bad(w, 500, err)
+		return
+	}
 	if err = saveConfig(next); err != nil {
+		os.Remove(panelPasswordFile)
 		m.mu.Unlock()
 		bad(w, 500, err)
 		return
