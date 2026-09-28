@@ -104,6 +104,17 @@ Type=oneshot
 ExecStart=/usr/local/lib/tcp-brutal-custom/install.sh --update
 TimeoutStartSec=infinity
 EOF
+  cat >/etc/systemd/system/tcp-brutal-custom-uninstall.service <<'EOF'
+[Unit]
+Description=TCP Brutal Custom graceful uninstall
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/tcp-brutal-custom/install.sh --uninstall
+TimeoutStartSec=infinity
+EOF
   systemctl daemon-reload
 }
 
@@ -171,7 +182,7 @@ uninstall() {
     [[ -n "$version" ]] && dkms remove "$name/$version" --all || true
   done
   rm -f "$binary" "$old_short_binary" "$legacy_binary" /usr/local/bin/brutalctl
-  rm -f /etc/systemd/system/tcp-brutal-custom-{manager,web,update}.service
+  rm -f /etc/systemd/system/tcp-brutal-custom-{manager,web,update,uninstall}.service
   rm -rf "$library"
   for source in /usr/src/$name-*; do [[ -d "$source" ]] && rm -rf "$source"; done
   if [[ -f "$data/upstream/module-path" && -f "$data/upstream/brutal.ko" ]]; then
@@ -294,6 +305,7 @@ for unit in manager web update; do
 done
 if [[ -f "$library/install.sh" ]]; then cp -a "$library/install.sh" "$tmp/old-installer"; fi
 if [[ -f /usr/local/bin/brutalctl ]]; then cp -a /usr/local/bin/brutalctl "$tmp/old-brutalctl"; fi
+if [[ -r /proc/net/tcp_brutal/rules ]]; then cp -a /proc/net/tcp_brutal/rules "$tmp/old-rules"; fi
 systemctl stop tcp-brutal-custom-web.service tcp-brutal-custom-manager.service 2>/dev/null || true
 
 # Stop new automatic Brutal takeovers, but do not terminate any existing TCP
@@ -342,6 +354,18 @@ if [[ ! -f "$config" ]]; then
 fi
 write_units
 modprobe brutal
+if [[ -f "$tmp/old-rules" && -w /proc/net/tcp_brutal/rules ]]; then
+  while read -r line; do
+    dst=$(sed -n 's/.*dst=\([^ ]*\).*/\1/p' <<<"$line")
+    rate=$(sed -n 's/.*rate=\([^ ]*\).*/\1/p' <<<"$line")
+    gain=$(sed -n 's/.*gain=\([^ ]*\).*/\1/p' <<<"$line")
+    lock=$(sed -n 's/.*lock=\([^ ]*\).*/\1/p' <<<"$line")
+    extra=''
+    [[ "$lock" == '0' ]] && extra=' nolock'
+    [[ -n "$dst" && -n "$rate" && -n "$gain" ]] &&
+      printf 'add %s rate=%s gain=%s%s\n' "$dst" "$rate" "$gain" "$extra" >/proc/net/tcp_brutal/rules || true
+  done <"$tmp/old-rules"
+fi
 if [[ "$mode" == 'install' ]]; then systemctl enable tcp-brutal-custom-manager.service tcp-brutal-custom-web.service; fi
 systemctl start tcp-brutal-custom-manager.service tcp-brutal-custom-web.service
 rm -f "$old_short_binary" "$legacy_binary"
