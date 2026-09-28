@@ -111,7 +111,7 @@ static void brutal_update_adaptive(struct sock *sk, const struct rate_sample *rs
     struct tcp_sock *tp = tcp_sk(sk);
     struct brutal *brutal = inet_csk_ca(sk);
     struct brutal_stats_state *st = brutal->stats;
-    u64 configured, now, elapsed, acked, delivery_rate, target, current;
+    u64 configured, now, elapsed, acked, delivery_rate, target, ceiling;
     bool loss_signal, mismatch, group_safe;
     u32 members = 1;
 
@@ -128,22 +128,22 @@ static void brutal_update_adaptive(struct sock *sk, const struct rate_sample *rs
         return;
     }
 
-    current = READ_ONCE(st->adaptive_ceiling);
+    ceiling = READ_ONCE(st->adaptive_ceiling);
 
     // A capped socket periodically probes upward. During the hold interval,
     // mismatch-only evidence cannot immediately undo the probe; clear RTT
     // congestion still can.
-    if (current && !READ_ONCE(st->congestion_limited) &&
+    if (ceiling && !READ_ONCE(st->congestion_limited) &&
         now - st->last_probe_us >= ADAPTIVE_PROBE_INTERVAL_US)
     {
-        u64 probed = div_u64(current * ADAPTIVE_PROBE_PERCENT, 100);
+        u64 probed = div_u64(ceiling * ADAPTIVE_PROBE_PERCENT, 100);
 
         if (probed >= configured)
             WRITE_ONCE(st->adaptive_ceiling, 0);
         else
-            WRITE_ONCE(st->adaptive_ceiling, max(probed, current + 1));
+            WRITE_ONCE(st->adaptive_ceiling, max(probed, ceiling + 1));
         st->last_probe_us = now;
-        current = READ_ONCE(st->adaptive_ceiling);
+        ceiling = READ_ONCE(st->adaptive_ceiling);
     }
 
     loss_signal = rs->losses || st->recent_loss_percent >= CONGESTION_LOSS_PERCENT ||
@@ -185,14 +185,14 @@ static void brutal_update_adaptive(struct sock *sk, const struct rate_sample *rs
     if (st->recent_loss_percent >= CONGESTION_LOSS_PERCENT && group_safe &&
         (READ_ONCE(st->congestion_limited) || mismatch))
     {
-        bool probe_hold = current && now - st->last_probe_us < ADAPTIVE_PROBE_HOLD_US;
+        bool probe_hold = ceiling && now - st->last_probe_us < ADAPTIVE_PROBE_HOLD_US;
 
         if (!probe_hold || READ_ONCE(st->congestion_limited))
         {
             target = div_u64(delivery_rate * ADAPTIVE_HEADROOM_PERCENT, 100);
             target = clamp_t(u64, target, MIN_PACING_RATE, configured);
-            current = READ_ONCE(st->adaptive_ceiling);
-            if (!current || target < current)
+            ceiling = READ_ONCE(st->adaptive_ceiling);
+            if (!ceiling || target < ceiling)
                 WRITE_ONCE(st->adaptive_ceiling, target);
             st->last_probe_us = now;
         }
