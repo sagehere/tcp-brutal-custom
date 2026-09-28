@@ -19,6 +19,9 @@ func TestManagerRoutesRegisterWithoutConflict(t *testing.T) {
 	if root.Code != http.StatusOK {
 		t.Fatalf("GET / status=%d", root.Code)
 	}
+	if !strings.Contains(root.Body.String(), "重置登录密码") {
+		t.Fatal("panel password reset control missing")
+	}
 
 	api := httptest.NewRecorder()
 	h.ServeHTTP(api, httptest.NewRequest(http.MethodGet, "/api/v1/status", nil))
@@ -29,6 +32,11 @@ func TestManagerRoutesRegisterWithoutConflict(t *testing.T) {
 	h.ServeHTTP(connections, httptest.NewRequest(http.MethodGet, "/api/v1/connections?port=443", nil))
 	if connections.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated connections status=%d", connections.Code)
+	}
+	reset := httptest.NewRecorder()
+	h.ServeHTTP(reset, httptest.NewRequest(http.MethodPost, "/api/v1/password/reset", strings.NewReader("{}")))
+	if reset.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated password reset status=%d", reset.Code)
 	}
 }
 

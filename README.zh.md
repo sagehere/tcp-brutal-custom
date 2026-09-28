@@ -89,7 +89,7 @@ curl -fsSL https://raw.githubusercontent.com/sagehere/tcp-brutal-custom/main/scr
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sagehere/tcp-brutal-custom/main/scripts/bootstrap.sh | \
-  sudo env TCP_BRUTAL_RELEASE_TAG=v2.1.7 bash
+  sudo env TCP_BRUTAL_RELEASE_TAG=v2.1.8 bash
 ```
 
 > **首次安装的信任边界：** `bootstrap.sh` 本身仍来自本 GitHub 仓库。如果你的威胁模型包含“首次安装前整个 GitHub 仓库/账号已经被接管”，仍应通过独立可信渠道核对下方公钥指纹后再授予 root 权限。安装成功后公钥会固定在本机，后续普通更新不会重新从 GitHub 建立信任根。
@@ -497,3 +497,8 @@ GPL-3.0，详见 [LICENSE](LICENSE)。
 `tbc2 uninstall` 会启动后台 systemd 卸载任务并立即返回，因此即使当前 SSH 会话本身正在使用 Brutal，也不会出现“卸载等待 SSH 断开，而 SSH 又等待卸载命令返回”的死锁。
 
 如果某个应用存在超长连接，或者持续主动执行 `TCP_CONGESTION=brutal` 创建新 socket，排空会一直保持等待，直到这些连接结束。
+
+
+### 中文交互菜单与密码重置
+
+直接执行 `sudo tbc2` 会进入中文交互菜单。Web 管理面板的“面板设置”中既可以手动修改登录密码，也可以点击“重置登录密码”生成新的高强度随机密码。重置成功后，所有已登录会话会立即失效，新密码只在本次重置响应中显示一次，请立即保存。
