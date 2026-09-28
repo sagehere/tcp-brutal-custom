@@ -1,8 +1,12 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
+	"io"
 	"testing"
 
 	"golang.org/x/crypto/argon2"
@@ -78,5 +82,99 @@ func TestHistoryDeltasAndReset(t *testing.T) {
 	restarted, err := h.query("raw", 130, 140, 443)
 	if err != nil || len(restarted) != 1 || restarted[0].Gap || restarted[0].Sent != 30 {
 		t.Fatalf("restart checkpoint failed: %+v %v", restarted, err)
+	}
+}
+
+
+func TestABHistoryEpochsAndReport(t *testing.T) {
+	dir := t.TempDir()
+	h, err := openHistoryAt(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.close()
+
+	p := abPortConfig{Port: 443, RateMbps: 100, Gain: 20, CanaryPercent: 5, Enabled: true}
+	epoch1, err := h.beginABEpoch(p, "test")
+	if err != nil || epoch1 == 0 {
+		t.Fatalf("begin epoch: %v %d", err, epoch1)
+	}
+
+	base0 := portState{Port: 443, Group: 11, Sent: 1000, Acked: 900, Retrans: 100, RTTSum: 10000, RTTSamples: 10, RTTMax: 2000, Members: 2}
+	can0 := portState{Port: 443, Group: 22, Sent: 500, Acked: 470, Retrans: 30, RTTSum: 6000, RTTSamples: 6, RTTMax: 1800, Members: 1}
+	if err = h.seedAB(443, base0, can0, selectorCount{Baseline: 90, Canary: 10}); err != nil {
+		t.Fatal(err)
+	}
+	base1 := base0
+	base1.Sent += 2000
+	base1.Acked += 1900
+	base1.Retrans += 100
+	base1.RTTSum += 20000
+	base1.RTTSamples += 20
+	can1 := can0
+	can1.Sent += 1000
+	can1.Acked += 960
+	can1.Retrans += 40
+	can1.RTTSum += 9000
+	can1.RTTSamples += 9
+	if err = h.recordABCohort(epoch1, "baseline", base1, 110); err != nil {
+		t.Fatal(err)
+	}
+	if err = h.recordABCohort(epoch1, "canary", can1, 110); err != nil {
+		t.Fatal(err)
+	}
+	if err = h.recordABSelector(epoch1, 443, selectorCount{Baseline: 180, Canary: 20, Failure: 1}, 110); err != nil {
+		t.Fatal(err)
+	}
+	if err = h.recordABApp(abAppSample{Time: 110, EpochID: epoch1, Port: 443, Cohort: "baseline", Source: "test", Requests: 90, Success: 89, Errors: 1, LatencySumUS: 90000, LatencySamples: 90, LatencyMaxUS: 4000}); err != nil {
+		t.Fatal(err)
+	}
+	if err = h.recordABApp(abAppSample{Time: 110, EpochID: epoch1, Port: 443, Cohort: "canary", Source: "test", Requests: 10, Success: 10, Errors: 0, LatencySumUS: 8000, LatencySamples: 10, LatencyMaxUS: 1500}); err != nil {
+		t.Fatal(err)
+	}
+
+	p.CanaryPercent = 50
+	epoch2, err := h.beginABEpoch(p, "percentage_change")
+	if err != nil || epoch2 == epoch1 {
+		t.Fatalf("new epoch: %v %d", err, epoch2)
+	}
+	epochs, err := h.abEpochs(443, 1, time.Now().Unix()+10)
+	if err != nil || len(epochs) != 2 || epochs[0].Ended == 0 || epochs[1].CanaryPercent != 50 {
+		t.Fatalf("epochs=%+v err=%v", epochs, err)
+	}
+
+	report, err := buildABReport(h, 443, 1, time.Now().Unix()+10, "minute")
+	if err != nil {
+		t.Fatal(err)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(report), int64(len(report)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"manifest.json": false, "epochs.csv": false, "cohort_samples.csv": false, "selector_samples.csv": false, "summary.csv": false, "analysis_rules.json": false}
+	for _, zf := range zr.File {
+		if _, ok := want[zf.Name]; ok {
+			want[zf.Name] = true
+		}
+		if zf.Name == "manifest.json" {
+			rc, e := zf.Open()
+			if e != nil {
+				t.Fatal(e)
+			}
+			b, e := io.ReadAll(rc)
+			rc.Close()
+			if e != nil {
+				t.Fatal(e)
+			}
+			var m map[string]any
+			if e = json.Unmarshal(b, &m); e != nil || int(m["schema_version"].(float64)) != 1 {
+				t.Fatalf("manifest=%s err=%v", b, e)
+			}
+		}
+	}
+	for name, ok := range want {
+		if !ok {
+			t.Fatalf("report missing %s", name)
+		}
 	}
 }
