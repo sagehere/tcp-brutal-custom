@@ -45,6 +45,10 @@ fi
 baseline_units_before="$(systemctl list-unit-files 'tcp-brutal-custom*' --no-legend 2>/dev/null || true)"
 baseline_active_before="$(systemctl list-units 'tcp-brutal-custom*' --state=active --no-legend 2>/dev/null || true)"
 
+if [[ -d /sys/module/brutal && ! -e /proc/net/tcp_brutal/ports ]]; then
+  die "loaded baseline brutal is incompatible with same-port A/B: /proc/net/tcp_brutal/ports is missing; upgrade baseline tcp-brutal-custom to 2.1.9 first"
+fi
+
 note "TCP Brutal Canary bootstrap"
 note "  OS:      ${PRETTY_NAME:-$ID}"
 note "  arch:    $arch"
@@ -87,7 +91,9 @@ fi
 git -C "$work" checkout -q --detach FETCH_HEAD
 commit="$(git -C "$work" rev-parse HEAD)"
 short="$(git -C "$work" rev-parse --short=12 HEAD)"
+build_version="2.1.9.canary.${short:0:7}"
 note "  commit:  $commit"
+note "  build:   $build_version"
 
 [[ -x "$work/scripts/install-canary.sh" ]] || die "scripts/install-canary.sh is missing or not executable at $ref"
 
@@ -106,6 +112,7 @@ cat > /etc/tcp-brutal-canary/build-info.json <<JSON
   "branch": "$(json_escape "$ref")",
   "commit": "$(json_escape "$commit")",
   "short_commit": "$(json_escape "$short")",
+  "build_version": "$(json_escape "$build_version")",
   "installed_at": "$(json_escape "$installed_at")",
   "kernel": "$(json_escape "$kernel")",
   "arch": "$(json_escape "$arch")",
