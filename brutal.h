@@ -75,6 +75,7 @@ struct brutal_stats_state
     u64 candidate_ceiling;
 
     u32 min_rtt_us;
+    u32 recent_losses;
     u8 recent_loss_percent;
     u8 congestion_limited;
     u8 sample_active;

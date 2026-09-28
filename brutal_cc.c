@@ -114,7 +114,7 @@ static void brutal_update_adaptive(struct sock *sk, const struct rate_sample *rs
     struct brutal *brutal = inet_csk_ca(sk);
     struct brutal_stats_state *st = brutal->stats;
     u64 configured, now, elapsed, acked, delivery_rate, target, ceiling;
-    bool loss_signal, mismatch, group_safe;
+    bool loss_signal, mismatch, group_safe, low_loss_policer;
     u32 members = 1;
 
     if (!st || !rs || rs->delivered <= 0 || rs->interval_us <= 0)
@@ -181,12 +181,20 @@ static void brutal_update_adaptive(struct sock *sk, const struct rate_sample *rs
         members = READ_ONCE(brutal->group->members);
     group_safe = members <= 1 || READ_ONCE(st->congestion_limited);
 
-    // For a single active member, persistent loss plus a large gap between
-    // configured and delivered rate is enough to identify a likely policer or
-    // client-side bottleneck even without RTT inflation. With multiple group
-    // members, require RTT congestion so normal group sharing is not mistaken
-    // for a slow path.
-    if (st->recent_loss_percent >= CONGESTION_LOSS_PERCENT && group_safe &&
+    // A token-bucket policer can hold a path far below the configured rate
+    // while producing less than the 2% loss used by the phase-one RTT
+    // congestion guard. For a single active member, any real packet loss plus
+    // a persistent delivery mismatch is enough evidence to run the adaptive
+    // ceiling confirmation. With multiple group members we keep the stricter
+    // congestion requirement so ordinary group sharing is never mistaken for
+    // a per-client bottleneck.
+    low_loss_policer = members <= 1 && st->recent_losses &&
+                       ((!ceiling && mismatch) ||
+                        (ceiling && delivery_rate * 100 < ceiling * ADAPTIVE_LOW_UTIL_PERCENT));
+
+    if (group_safe &&
+        (st->recent_loss_percent >= CONGESTION_LOSS_PERCENT ||
+         READ_ONCE(st->congestion_limited) || low_loss_policer) &&
         ((!ceiling && mismatch) || READ_ONCE(st->congestion_limited) ||
          (ceiling && delivery_rate * 100 < ceiling * ADAPTIVE_LOW_UTIL_PERCENT)))
     {
@@ -264,8 +272,11 @@ void brutal_update_rate(struct sock *sk, const struct rate_sample *rs)
     }
     brutal->ack_rate = ack_rate;
     if (brutal->stats)
+    {
+        brutal->stats->recent_losses = losses;
         brutal->stats->recent_loss_percent =
             samples ? min_t(u64, (u64)losses * 100 / samples, 100) : 0;
+    }
 
     rtt_us = tp->srtt_us >> 3;
     base_rtt_us = rtt_us;
