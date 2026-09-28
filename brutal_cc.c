@@ -189,7 +189,13 @@ static void brutal_update_adaptive(struct sock *sk, const struct rate_sample *rs
 
         if (!probe_hold || READ_ONCE(st->congestion_limited))
         {
-            target = div_u64(delivery_rate * ADAPTIVE_HEADROOM_PERCENT, 100);
+            // Convert unique delivered bytes back to an estimated wire-rate
+            // need using the observed loss, then keep 10% probing headroom.
+            // This avoids under-driving lossy links (for example, 5% random
+            // loss would otherwise turn a 100 Mbps path into an ~90 Mbps cap).
+            target = div_u64(delivery_rate * 100,
+                             max_t(u32, 100 - st->recent_loss_percent, MIN_ACK_RATE_PERCENT));
+            target = div_u64(target * ADAPTIVE_HEADROOM_PERCENT, 100);
             target = clamp_t(u64, target, MIN_PACING_RATE, configured);
             ceiling = READ_ONCE(st->adaptive_ceiling);
             if (!ceiling || target < ceiling)
