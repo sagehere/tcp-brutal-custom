@@ -113,6 +113,36 @@ record_status() {
   chmod 600 "$data/update.json"
 }
 
+
+quiesce_brutal_rules() {
+  # Stop creating new sockets that reference the currently loaded Brutal
+  # module before attempting a module switch. Existing sockets keep their
+  # congestion-control state until they close.
+  if [[ -w /proc/net/tcp_brutal/ports ]]; then
+    awk '/active=1/ {split($1,a,"="); print a[2]}' /proc/net/tcp_brutal/ports |
+      while read -r port; do
+        [[ -n "$port" ]] && printf 'del %s\n' "$port" >/proc/net/tcp_brutal/ports || true
+      done
+  fi
+  if [[ -w /proc/net/tcp_brutal/rules ]]; then
+    printf 'flush\n' >/proc/net/tcp_brutal/rules || true
+  fi
+}
+
+show_brutal_sockets() {
+  echo 'TCP sockets still using brutal:' >&2
+  ss -tinpH 2>/dev/null | awk '
+    /^[^[:space:]]/ { socket=$0; next }
+    /(^|[[:space:]])brutal([[:space:]]|$)/ {
+      print "  " socket > "/dev/stderr"
+      print "    " $0 > "/dev/stderr"
+      found=1
+    }
+    END {
+      if (!found) print "  (none visible to ss; another socket or kernel reference may still exist)" > "/dev/stderr"
+    }'
+}
+
 uninstall() {
   systemctl stop tcp-brutal-custom-web.service tcp-brutal-custom-manager.service 2>/dev/null || true
   systemctl disable tcp-brutal-custom-web.service tcp-brutal-custom-manager.service 2>/dev/null || true
@@ -261,11 +291,18 @@ if [[ "$mode" == '--update' && -e /proc/net/tcp_brutal/ports ]]; then
     [[ -n "$port" ]] && ss -K state established "( sport = :$port )" >/dev/null 2>&1 || true
   done
 fi
+
+# This is required for both normal updates and the first migration from an
+# upstream Brutal module. Destination rules or port rules can otherwise keep
+# creating new sockets that pin the old module while we are trying to switch it.
+quiesce_brutal_rules
+
 if lsmod | grep -q '^brutal '; then
   if ! rmmod brutal; then
     record_status failed 'module-busy'
+    show_brutal_sockets
     systemctl start tcp-brutal-custom-manager.service tcp-brutal-custom-web.service 2>/dev/null || true
-    echo 'Module still in use; upgrade was not activated' >&2
+    echo 'Module still in use; close the listed Brutal connections/services and retry the installation.' >&2
     exit 1
   fi
 fi
