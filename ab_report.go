@@ -3,10 +3,12 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"crypto/sha256"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -43,7 +45,10 @@ func buildABReport(h *history, port uint16, from, to int64, tier string) ([]byte
 
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
+	var checksums []string
 	writeFile := func(name string, data []byte) error {
+		sum := sha256.Sum256(data)
+		checksums = append(checksums, fmt.Sprintf("%x  %s", sum, name))
 		w, err := zw.Create(name)
 		if err != nil {
 			return err
@@ -155,6 +160,10 @@ func buildABReport(h *history, port uint16, from, to int64, tier string) ([]byte
 	}
 	j, _ := json.MarshalIndent(analysis, "", "  ")
 	if err = writeFile("analysis_rules.json", j); err != nil { zw.Close(); return nil, err }
+
+	cw, err := zw.Create("checksums.sha256")
+	if err != nil { zw.Close(); return nil, err }
+	if _, err = cw.Write([]byte(strings.Join(checksums, "\n") + "\n")); err != nil { zw.Close(); return nil, err }
 
 	if err = zw.Close(); err != nil {
 		return nil, err
