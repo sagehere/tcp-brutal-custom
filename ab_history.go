@@ -142,6 +142,13 @@ func (h *history) initAB() error {
 			return err
 		}
 	}
+	var schemaVersion string
+	if err := h.db.QueryRow("SELECT value FROM ab_meta WHERE key='schema_version'").Scan(&schemaVersion); err != nil {
+		return err
+	}
+	if schemaVersion != "1" {
+		return fmt.Errorf("unsupported A/B schema version %q", schemaVersion)
+	}
 	if h.abLast == nil {
 		h.abLast = map[string]abCohortSample{}
 	}
