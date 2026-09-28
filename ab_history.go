@@ -91,6 +91,8 @@ type abSummary struct {
 
 func (h *history) initAB() error {
 	for _, q := range []string{
+		`CREATE TABLE IF NOT EXISTS ab_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+		`INSERT OR IGNORE INTO ab_meta(key,value) VALUES('schema_version','1')`,
 		`CREATE TABLE IF NOT EXISTS ab_epochs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			port INTEGER NOT NULL,
@@ -365,9 +367,14 @@ func (h *history) recordABApp(x abAppSample) error {
 	if x.Time == 0 {
 		x.Time = time.Now().Unix()
 	}
+	tx, err := h.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	for _, tier := range []struct{name string; seconds int64}{{"raw",10},{"minute",60},{"hour",3600}} {
 		bucket := x.Time/tier.seconds*tier.seconds
-		_, err := h.db.Exec(`INSERT INTO ab_app_samples(tier,ts,epoch_id,port,cohort,source,requests,success,errors,latency_sum_us,latency_samples,latency_max_us)
+		_, err = tx.Exec(`INSERT INTO ab_app_samples(tier,ts,epoch_id,port,cohort,source,requests,success,errors,latency_sum_us,latency_samples,latency_max_us)
 			VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(tier,ts,epoch_id,cohort,source) DO UPDATE SET
 			requests=requests+excluded.requests,success=success+excluded.success,errors=errors+excluded.errors,
 			latency_sum_us=latency_sum_us+excluded.latency_sum_us,latency_samples=latency_samples+excluded.latency_samples,
@@ -375,7 +382,7 @@ func (h *history) recordABApp(x abAppSample) error {
 			tier.name,bucket,x.EpochID,x.Port,x.Cohort,x.Source,x.Requests,x.Success,x.Errors,x.LatencySumUS,x.LatencySamples,x.LatencyMaxUS)
 		if err != nil { return err }
 	}
-	return nil
+	return tx.Commit()
 }
 
 func (h *history) abEpochs(port uint16, from, to int64) ([]abEpoch, error) {
