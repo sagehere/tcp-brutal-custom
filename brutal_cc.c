@@ -28,6 +28,7 @@
 #define ADAPTIVE_PROBE_INTERVAL_US (1 * USEC_PER_SEC)
 #define ADAPTIVE_PROBE_HOLD_US (500 * USEC_PER_MSEC)
 #define ADAPTIVE_CONFIRM_SAMPLES 2
+#define ADAPTIVE_NOLOSS_CONFIRM_SAMPLES 4
 
 // An unused reserved slot is returned to the group this long after its time
 #define RESV_STALE_NS (20 * NSEC_PER_MSEC)
@@ -114,8 +115,8 @@ static void brutal_update_adaptive(struct sock *sk, const struct rate_sample *rs
     struct brutal *brutal = inet_csk_ca(sk);
     struct brutal_stats_state *st = brutal->stats;
     u64 configured, now, elapsed, acked, delivery_rate, target, ceiling;
-    bool loss_signal, mismatch, group_safe, low_loss_policer;
-    u32 members = 1;
+    bool loss_signal, mismatch, group_safe, low_loss_policer, no_loss_mismatch;
+    u32 members = 1, confirm_samples;
 
     if (!st || !rs || rs->delivered <= 0 || rs->interval_us <= 0)
         return;
@@ -150,11 +151,16 @@ static void brutal_update_adaptive(struct sock *sk, const struct rate_sample *rs
         ceiling = READ_ONCE(st->adaptive_ceiling);
     }
 
-    loss_signal = rs->losses || st->recent_loss_percent >= CONGESTION_LOSS_PERCENT ||
+    loss_signal = rs->losses || st->recent_losses ||
+                  st->recent_loss_percent >= CONGESTION_LOSS_PERCENT ||
                   READ_ONCE(st->congestion_limited);
     if (!st->sample_active)
     {
-        if (loss_signal)
+        // Keep a low-frequency capacity sample running for a single active
+        // member even when TCP itself has not reported loss. Some policers
+        // discard below TCP's immediate loss-accounting horizon, so loss-only
+        // sampling can miss a persistent configured/delivered mismatch.
+        if (loss_signal || !brutal->group || READ_ONCE(brutal->group->members) <= 1)
             brutal_adaptive_sample_start(tp, st);
         return;
     }
@@ -191,10 +197,15 @@ static void brutal_update_adaptive(struct sock *sk, const struct rate_sample *rs
     low_loss_policer = members <= 1 && st->recent_losses &&
                        ((!ceiling && mismatch) ||
                         (ceiling && delivery_rate * 100 < ceiling * ADAPTIVE_LOW_UTIL_PERCENT));
+    no_loss_mismatch = members <= 1 && !st->recent_losses &&
+                       !READ_ONCE(st->congestion_limited) &&
+                       ((!ceiling && mismatch) ||
+                        (ceiling && delivery_rate * 100 < ceiling * ADAPTIVE_LOW_UTIL_PERCENT));
+    confirm_samples = no_loss_mismatch ? ADAPTIVE_NOLOSS_CONFIRM_SAMPLES : ADAPTIVE_CONFIRM_SAMPLES;
 
     if (group_safe &&
         (st->recent_loss_percent >= CONGESTION_LOSS_PERCENT ||
-         READ_ONCE(st->congestion_limited) || low_loss_policer) &&
+         READ_ONCE(st->congestion_limited) || low_loss_policer || no_loss_mismatch) &&
         ((!ceiling && mismatch) || READ_ONCE(st->congestion_limited) ||
          (ceiling && delivery_rate * 100 < ceiling * ADAPTIVE_LOW_UTIL_PERCENT)))
     {
@@ -220,7 +231,7 @@ static void brutal_update_adaptive(struct sock *sk, const struct rate_sample *rs
                 st->candidate_ceiling = max(st->candidate_ceiling, target);
             st->candidate_samples++;
 
-            if (st->candidate_samples >= ADAPTIVE_CONFIRM_SAMPLES)
+            if (st->candidate_samples >= confirm_samples)
             {
                 ceiling = READ_ONCE(st->adaptive_ceiling);
                 if (!ceiling || st->candidate_ceiling < ceiling)
@@ -237,7 +248,7 @@ static void brutal_update_adaptive(struct sock *sk, const struct rate_sample *rs
         st->candidate_samples = 0;
     }
 
-    if (loss_signal)
+    if (loss_signal || members <= 1)
         brutal_adaptive_sample_start(tp, st);
 }
 
