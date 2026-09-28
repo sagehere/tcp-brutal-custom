@@ -36,6 +36,10 @@ func buildABReport(h *history, port uint16, from, to int64, tier string) ([]byte
 	if err != nil {
 		return nil, err
 	}
+	appSamples, err := h.abAppSamples(tier, port, from, to)
+	if err != nil {
+		return nil, err
+	}
 
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
@@ -104,6 +108,18 @@ func buildABReport(h *history, port uint16, from, to int64, tier string) ([]byte
 	b, err = csvBytes([]string{"time_unix","epoch_id","port","baseline_connections","canary_connections","selector_failures","gap"}, selectorRows)
 	if err != nil { zw.Close(); return nil, err }
 	if err = writeFile("selector_samples.csv", b); err != nil { zw.Close(); return nil, err }
+
+	var appRows [][]string
+	for _, x := range appSamples {
+		appRows = append(appRows, []string{
+			strconv.FormatInt(x.Time,10),strconv.FormatInt(x.EpochID,10),strconv.Itoa(int(x.Port)),x.Cohort,x.Source,
+			strconv.FormatUint(x.Requests,10),strconv.FormatUint(x.Success,10),strconv.FormatUint(x.Errors,10),
+			strconv.FormatUint(x.LatencySumUS,10),strconv.FormatUint(x.LatencySamples,10),strconv.FormatUint(x.LatencyMaxUS,10),
+		})
+	}
+	b, err = csvBytes([]string{"time_unix","epoch_id","port","cohort","source","requests","success","errors","latency_sum_us","latency_samples","latency_max_us"}, appRows)
+	if err != nil { zw.Close(); return nil, err }
+	if err = writeFile("app_samples.csv", b); err != nil { zw.Close(); return nil, err }
 
 	var summaryRows [][]string
 	for _, x := range summaries {
