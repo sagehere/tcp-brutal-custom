@@ -117,6 +117,9 @@ func managerMode() error {
 			if err = m.applyABPort(p); err != nil {
 				return fmt.Errorf("restore A/B port %d: %w", p.Port, err)
 			}
+			if _, err = m.history.ensureABEpoch(p, "manager_restart"); err != nil {
+				return fmt.Errorf("restore A/B epoch %d: %w", p.Port, err)
+			}
 		}
 	}
 	if err = os.MkdirAll("/run/tcp-brutal-canary", 0750); err != nil {
@@ -163,8 +166,8 @@ func managerMode() error {
 	return err
 }
 
-func parsePorts() ([]portState, error) {
-	b, err := os.ReadFile(portsPath)
+func parsePortsAt(path string) ([]portState, error) {
+	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -186,6 +189,17 @@ func parsePorts() ([]portState, error) {
 		out = append(out, p)
 	}
 	return out, nil
+}
+
+func parsePorts() ([]portState, error) { return parsePortsAt(portsPath) }
+
+func findPortState(states []portState, port uint16) (portState, bool) {
+	for _, p := range states {
+		if p.Port == port {
+			return p, true
+		}
+	}
+	return portState{}, false
 }
 
 func writePort(command string) error {
@@ -335,13 +349,16 @@ func (m *manager) collect(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			states, err := parsePorts()
+			canaryStates, err := parsePortsAt(portsPath)
 			if err != nil {
-				log.Printf("sampling: %v", err)
+				log.Printf("sampling canary: %v", err)
 				continue
 			}
+			baselineStates, baselineErr := parsePortsAt(baselinePortsPath)
 			now := time.Now().Unix()
-			for _, p := range states {
+
+			// Preserve the existing canary-only history.
+			for _, p := range canaryStates {
 				var c selectorCount
 				if p.Active {
 					c, err = m.selector.Count(p.Port)
@@ -353,6 +370,48 @@ func (m *manager) collect(ctx context.Context) {
 				x := sample{Time: now, Port: p.Port, Group: p.Group, Sent: p.Sent, Acked: p.Acked, Retrans: p.Retrans, Success: c.Success(), Failure: c.Failure, Members: p.Members, RTTSum: p.RTTSum, RTTSamples: p.RTTSamples, RTTMax: p.RTTMax}
 				if err = m.history.record(x); err != nil {
 					log.Printf("history: %v", err)
+				}
+			}
+
+			if baselineErr != nil {
+				log.Printf("sampling baseline: %v", baselineErr)
+				continue
+			}
+			m.mu.Lock()
+			abPorts := append([]abPortConfig(nil), m.cfg.ABPorts...)
+			m.mu.Unlock()
+			for _, cfg := range abPorts {
+				if !cfg.Enabled {
+					continue
+				}
+				epochID := m.history.currentABEpoch(cfg.Port)
+				if epochID == 0 {
+					epochID, err = m.history.ensureABEpoch(cfg, "collector_recovery")
+					if err != nil {
+						log.Printf("A/B epoch %d: %v", cfg.Port, err)
+						continue
+					}
+				}
+				base, bok := findPortState(baselineStates, cfg.Port)
+				canary, cok := findPortState(canaryStates, cfg.Port)
+				if !bok || !cok {
+					log.Printf("A/B sample port %d missing cohort state baseline=%v canary=%v", cfg.Port, bok, cok)
+					continue
+				}
+				base.Port, canary.Port = cfg.Port, cfg.Port
+				c, e := m.selector.Count(cfg.Port)
+				if e != nil {
+					log.Printf("A/B selector %d: %v", cfg.Port, e)
+					continue
+				}
+				if err = m.history.recordABCohort(epochID, "baseline", base, now); err != nil {
+					log.Printf("A/B baseline history %d: %v", cfg.Port, err)
+				}
+				if err = m.history.recordABCohort(epochID, "canary", canary, now); err != nil {
+					log.Printf("A/B canary history %d: %v", cfg.Port, err)
+				}
+				if err = m.history.recordABSelector(epochID, cfg.Port, c, now); err != nil {
+					log.Printf("A/B selector history %d: %v", cfg.Port, err)
 				}
 			}
 		case <-cleanup.C:
