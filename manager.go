@@ -120,6 +120,9 @@ func managerMode() error {
 			if _, err = m.history.ensureABEpoch(p, "manager_restart"); err != nil {
 				return fmt.Errorf("restore A/B epoch %d: %w", p.Port, err)
 			}
+			if err = m.seedABNow(p.Port); err != nil {
+				return fmt.Errorf("restore A/B checkpoint %d: %w", p.Port, err)
+			}
 		}
 	}
 	if err = os.MkdirAll("/run/tcp-brutal-canary", 0750); err != nil {
