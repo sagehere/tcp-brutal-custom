@@ -48,7 +48,9 @@ Current starting parameters:
 - observed-loss correction: convert unique delivered rate back toward estimated wire-rate need;
 - adaptive headroom: 120%;
 - downward-ceiling confirmation: two consecutive sampling windows, using the higher safe estimate;
+- no-loss mismatch confirmation: four consecutive sampling windows for a single active member;
 - upward probe: +25% every 1 second;
+- upward probe eligibility: previous delivery must reach at least 85% of the current ceiling;
 - probe hold: 500 ms.
 
 The first mismatch is judged against the configured rate. Once a ceiling exists, the configured rate is no longer used as a reason to keep shrinking the ceiling. Further reductions require either clear phase-one RTT congestion or delivery below 80% of the current ceiling.
@@ -171,3 +173,61 @@ This is substantially faster than the earlier +10% / 2 second probe policy, whic
 The controller now behaves well across the targeted synthetic cases and dynamic capacity changes tested on `kr`. Remaining risk is concentrated in real-world path signatures that synthetic `netem` does not reproduce exactly, especially cellular/Wi-Fi variability, large-token-bucket policers, strong ACK compression and asymmetric congestion.
 
 Before a production release, the preferred next step is a canary/real-network validation rather than further tuning solely against synthetic loss.
+
+
+## Real policer validation
+
+Synthetic random loss is not enough to validate the remaining edge case, because a real token-bucket policer can discard traffic without TCP immediately reporting those drops through `rate_sample.losses` or `bytes_retrans`.
+
+A real `tc police` egress policer was therefore tested on `kr`:
+
+- configured Brutal target: 500 Mbps;
+- policer: 100 Mbps;
+- burst: 256 KiB;
+- base delay: 20 ms;
+- no artificial random loss.
+
+### Why an additional detector was needed
+
+Before the no-loss mismatch change, the policer itself recorded dropped packets while TCP still reported zero retransmitted bytes. Goodput was roughly 95 Mbps, but the socket pacing rate remained at 500 Mbps because the adaptive sampler waited for a TCP loss signal that never arrived.
+
+Phase 2 now keeps a low-frequency capacity sample running for a single active, non-application-limited member even when TCP reports no loss. A no-loss delivery mismatch needs four consecutive windows (roughly two seconds) before it can establish or lower a ceiling. Multi-member groups do not use this mismatch-only path.
+
+### Stable 100 Mbps policer
+
+After the change:
+
+- delivered goodput: **95.58 Mbps** over 20 seconds;
+- initial pacing: 500 Mbps;
+- first adaptive ceiling: roughly 114 Mbps;
+- one upward probe reached roughly 143 Mbps;
+- the controller observed that delivery did not utilize at least 85% of that probe and returned to roughly 115 Mbps;
+- pacing then remained stable near 115 Mbps instead of repeatedly probing all the way back to 500 Mbps.
+
+This led to a second guard: upward probing is allowed only when the previous delivery estimate reaches at least 85% of the current ceiling.
+
+### Same-connection policer transition: 100 -> 20 -> 100 Mbps
+
+The policer rate was changed while one TCP connection remained open.
+
+Delivered throughput by one-second samples:
+
+```text
+100 Mbps phase:
+93.6, 95.1, 97.1, 95.4, 95.8, 95.7, 95.6, 95.7, 95.7 Mbps
+
+20 Mbps phase:
+19.0, 19.1, 19.2, 19.3, 19.1, 19.1, 19.1, 19.1, 19.2, 19.3 Mbps
+
+recovery to 100 Mbps:
+28.5, 35.6, 44.5, 55.7, 69.6, 87.0, 97.0, 93.4, 95.6, 95.8, 95.6 Mbps
+```
+
+Pacing behavior:
+
+- pre-drop steady state: about 115 Mbps;
+- after 100 -> 20 Mbps: converged to about 23 Mbps;
+- after 20 -> 100 Mbps: probed through about 29, 36, 45, 56, 70, 88 and 110 Mbps;
+- final steady state: about 116 Mbps.
+
+This validates the low/no-loss policer path, fast downward adaptation, utilization-gated recovery probing, and stable post-recovery behavior on the same connection.
