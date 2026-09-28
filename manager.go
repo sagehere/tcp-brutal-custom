@@ -201,9 +201,26 @@ func validatePort(p portConfig, webPort uint16) error {
 	return nil
 }
 
+func baselineOwnsPort(port uint16) bool {
+	b, err := os.ReadFile(baselinePortsPath)
+	if err != nil {
+		return false
+	}
+	needle := fmt.Sprintf("port=%d ", port)
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(line, needle) && strings.Contains(line, " active=1 ") {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *manager) applyPort(p portConfig) error {
 	if err := validatePort(p, m.cfg.WebPort); err != nil {
 		return err
+	}
+	if baselineOwnsPort(p.Port) {
+		return fmt.Errorf("port %d is already managed by baseline tcp-brutal-custom", p.Port)
 	}
 	rate := uint64(p.RateMbps*1e6/8 + 0.5)
 	if err := writePort(fmt.Sprintf("add %d rate=%d gain=%d", p.Port, rate, p.Gain)); err != nil {
