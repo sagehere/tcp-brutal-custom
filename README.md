@@ -219,7 +219,13 @@ Port rules have priority over upstream destination-IP rules.
 
 The configured Mbps value is the group's **target effective delivered rate**, not a strict wire-rate shaper.
 
-Brutal compensates for loss. When loss is observed, the actual sending rate can exceed the configured target in an attempt to maintain the delivered rate. Do not configure a target higher than the path can realistically sustain.
+Phase-one congestion guardrails keep Brutal's random-loss compensation, but limit how aggressively it can amplify an oversized target:
+
+- on lossy paths without clear queue growth, loss compensation is capped at **110%** of the configured rate;
+- when recent loss is at least **2%** and current SRTT reaches at least **125%** of the minimum observed SRTT, extra loss compensation is suppressed;
+- CWND is sized from the minimum observed SRTT instead of queue-inflated current SRTT, so a growing bottleneck queue does not itself cause CWND to grow.
+
+These guardrails are not an adaptive bandwidth estimator. If a path can sustain only 100 Mbps and the configured target is 500 Mbps, phase one reduces the harmful feedback loop but does not automatically rewrite the target to 100 Mbps. Configure a realistic target when possible; automatic per-socket rate ceilings belong to the next adaptive phase.
 
 Bandwidth is scheduled dynamically across group members rather than divided into fixed per-connection shares.
 

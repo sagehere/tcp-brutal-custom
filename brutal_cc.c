@@ -7,10 +7,14 @@
 #define MIN_PKT_INFO_SAMPLES 50
 #define MIN_ACK_RATE_PERCENT 80
 
-// Keep loss compensation for lossy, non-congested paths, but cap it so an
-// oversized configured rate cannot be amplified as aggressively as before.
+// Phase-one guardrails: keep the useful random-loss behavior without letting
+// an oversized configured rate amplify queue congestion.
+//
+// Non-congested loss compensation may raise pacing by at most 10%.
 #define MAX_LOSS_COMPENSATION_PERCENT 110
+// Ignore tiny loss levels when deciding whether queue growth is congestion.
 #define CONGESTION_LOSS_PERCENT 2
+// Suppress loss compensation once SRTT reaches 1.25x the minimum observed SRTT.
 #define CONGESTION_RTT_PERCENT 125
 
 // An unused reserved slot is returned to the group this long after its time
