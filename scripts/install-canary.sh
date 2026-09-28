@@ -132,6 +132,7 @@ Requires=tcp-brutal-canary-manager.service
 Type=simple
 User=tcpbrutal
 Group=tcpbrutal
+ExecStartPre=/bin/sh -c 'i=0; while [ ! -s /run/tcp-brutal-canary/panel.json ]; do i=$((i+1)); [ "$i" -ge 30 ] && exit 1; sleep 1; done'
 ExecStart=/usr/local/bin/tbc2-canary web
 Restart=on-failure
 RestartSec=2
