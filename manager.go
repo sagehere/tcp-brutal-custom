@@ -628,20 +628,9 @@ func (m *manager) changePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	m.mu.Lock()
 	next := m.cfg
-	if err := setPassword(&next, in.Password); err != nil {
+	if err := persistPassword(&next, in.Password); err != nil {
 		m.mu.Unlock()
 		bad(w, 400, err)
-		return
-	}
-	if err := savePanelPassword(in.Password); err != nil {
-		m.mu.Unlock()
-		bad(w, 500, err)
-		return
-	}
-	if err := saveConfig(next); err != nil {
-		os.Remove(panelPasswordFile)
-		m.mu.Unlock()
-		bad(w, 500, err)
 		return
 	}
 	m.cfg = next
@@ -660,18 +649,7 @@ func (m *manager) resetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 	m.mu.Lock()
 	next := m.cfg
-	if err = setPassword(&next, password); err != nil {
-		m.mu.Unlock()
-		bad(w, 500, err)
-		return
-	}
-	if err = savePanelPassword(password); err != nil {
-		m.mu.Unlock()
-		bad(w, 500, err)
-		return
-	}
-	if err = saveConfig(next); err != nil {
-		os.Remove(panelPasswordFile)
+	if err = persistPassword(&next, password); err != nil {
 		m.mu.Unlock()
 		bad(w, 500, err)
 		return
