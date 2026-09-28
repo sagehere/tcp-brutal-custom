@@ -77,7 +77,7 @@ To pin a specific signed release instead of `latest`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sagehere/tcp-brutal-custom/main/scripts/bootstrap.sh | \
-  sudo env TCP_BRUTAL_RELEASE_TAG=v2.1.6 bash
+  sudo env TCP_BRUTAL_RELEASE_TAG=v2.1.7 bash
 ```
 
 > **First-install trust boundary:** the bootstrap itself comes from this GitHub repository. If your threat model includes a full compromise of the repository/account before first installation, independently verify the release-key fingerprint below before granting root privileges. Existing installations pin the key locally, so normal updates do not re-bootstrap trust from GitHub.
@@ -393,3 +393,10 @@ See [TRUST.md](TRUST.md).
 GPL-3.0. See [LICENSE](LICENSE).
 
 The upstream TCP Brutal code and this modified work remain subject to the GPL-3.0 license and the corresponding attribution requirements.
+
+
+## Graceful maintenance behavior
+
+Updates and uninstalls use a drain-first maintenance flow. The system stops creating new automatic Brutal sockets, but does not actively terminate existing TCP connections. Existing Brutal connections continue until they close naturally. During the drain window, new matching connections use the host's normal TCP congestion control. Once the old module has no users, the update switches modules and restores configured port and destination rules automatically.
+
+`tbc2 uninstall` starts a background systemd maintenance job and returns immediately, which avoids deadlocking an SSH session that itself is using Brutal. Very long-lived or applications that continuously force `TCP_CONGESTION=brutal` can keep a drain pending until those sockets close.

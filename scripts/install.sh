@@ -102,7 +102,18 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/usr/local/lib/tcp-brutal-custom/install.sh --update
-TimeoutStartSec=900
+TimeoutStartSec=infinity
+EOF
+  cat >/etc/systemd/system/tcp-brutal-custom-uninstall.service <<'EOF'
+[Unit]
+Description=TCP Brutal Custom graceful uninstall
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/tcp-brutal-custom/install.sh --uninstall
+TimeoutStartSec=infinity
 EOF
   systemctl daemon-reload
 }
@@ -143,26 +154,35 @@ show_brutal_sockets() {
     }'
 }
 
+wait_for_brutal_release() {
+  local waited=0
+  while lsmod | grep -q '^brutal '; do
+    if rmmod brutal 2>/dev/null; then
+      echo 'Brutal module drained successfully.'
+      return 0
+    fi
+    if (( waited == 0 || waited % 60 == 0 )); then
+      echo "Waiting for existing Brutal connections to drain naturally... (${waited}s)" >&2
+      show_brutal_sockets
+    fi
+    sleep 5
+    waited=$((waited + 5))
+  done
+}
+
 uninstall() {
   systemctl stop tcp-brutal-custom-web.service tcp-brutal-custom-manager.service 2>/dev/null || true
   systemctl disable tcp-brutal-custom-web.service tcp-brutal-custom-manager.service 2>/dev/null || true
-  if [[ -e /proc/net/tcp_brutal/ports ]]; then
-    awk '/active=1/ {split($1,a,"=");print a[2]}' /proc/net/tcp_brutal/ports | while read -r port; do
-      [[ -n "$port" ]] && ss -K state established "( sport = :$port )" >/dev/null 2>&1 || true
-    done
-  fi
+  quiesce_brutal_rules
   if lsmod | grep -q '^brutal '; then
-    if ! rmmod brutal; then
-      systemctl start tcp-brutal-custom-manager.service tcp-brutal-custom-web.service 2>/dev/null || true
-      echo 'Module in use; installation retained for recovery' >&2
-      exit 1
-    fi
+    echo 'Entering graceful drain: existing Brutal TCP connections will be allowed to finish naturally.'
+    wait_for_brutal_release
   fi
   dkms status -m "$name" 2>/dev/null | awk -F'[/, ]+' '{print $2}' | sort -u | while read -r version; do
     [[ -n "$version" ]] && dkms remove "$name/$version" --all || true
   done
   rm -f "$binary" "$old_short_binary" "$legacy_binary" /usr/local/bin/brutalctl
-  rm -f /etc/systemd/system/tcp-brutal-custom-{manager,web,update}.service
+  rm -f /etc/systemd/system/tcp-brutal-custom-{manager,web,update,uninstall}.service
   rm -rf "$library"
   for source in /usr/src/$name-*; do [[ -d "$source" ]] && rm -rf "$source"; done
   if [[ -f "$data/upstream/module-path" && -f "$data/upstream/brutal.ko" ]]; then
@@ -285,26 +305,17 @@ for unit in manager web update; do
 done
 if [[ -f "$library/install.sh" ]]; then cp -a "$library/install.sh" "$tmp/old-installer"; fi
 if [[ -f /usr/local/bin/brutalctl ]]; then cp -a /usr/local/bin/brutalctl "$tmp/old-brutalctl"; fi
+if [[ -r /proc/net/tcp_brutal/rules ]]; then cp -a /proc/net/tcp_brutal/rules "$tmp/old-rules"; fi
 systemctl stop tcp-brutal-custom-web.service tcp-brutal-custom-manager.service 2>/dev/null || true
-if [[ "$mode" == '--update' && -e /proc/net/tcp_brutal/ports ]]; then
-  awk '/active=1/ {split($1,a,"=");print a[2]}' /proc/net/tcp_brutal/ports | while read -r port; do
-    [[ -n "$port" ]] && ss -K state established "( sport = :$port )" >/dev/null 2>&1 || true
-  done
-fi
 
-# This is required for both normal updates and the first migration from an
-# upstream Brutal module. Destination rules or port rules can otherwise keep
-# creating new sockets that pin the old module while we are trying to switch it.
+# Stop new automatic Brutal takeovers, but do not terminate any existing TCP
+# connection. Existing sockets continue using the old module until they close.
 quiesce_brutal_rules
 
 if lsmod | grep -q '^brutal '; then
-  if ! rmmod brutal; then
-    record_status failed 'module-busy'
-    show_brutal_sockets
-    systemctl start tcp-brutal-custom-manager.service tcp-brutal-custom-web.service 2>/dev/null || true
-    echo 'Module still in use; close the listed Brutal connections/services and retry the installation.' >&2
-    exit 1
-  fi
+  record_status running 'draining-existing-connections'
+  echo 'Entering graceful drain: existing Brutal TCP connections will be allowed to finish naturally.'
+  wait_for_brutal_release
 fi
 
 rollback() {
@@ -343,6 +354,18 @@ if [[ ! -f "$config" ]]; then
 fi
 write_units
 modprobe brutal
+if [[ -f "$tmp/old-rules" && -w /proc/net/tcp_brutal/rules ]]; then
+  while read -r line; do
+    dst=$(sed -n 's/.*dst=\([^ ]*\).*/\1/p' <<<"$line")
+    rate=$(sed -n 's/.*rate=\([^ ]*\).*/\1/p' <<<"$line")
+    gain=$(sed -n 's/.*gain=\([^ ]*\).*/\1/p' <<<"$line")
+    lock=$(sed -n 's/.*lock=\([^ ]*\).*/\1/p' <<<"$line")
+    extra=''
+    [[ "$lock" == '0' ]] && extra=' nolock'
+    [[ -n "$dst" && -n "$rate" && -n "$gain" ]] &&
+      printf 'add %s rate=%s gain=%s%s\n' "$dst" "$rate" "$gain" "$extra" >/proc/net/tcp_brutal/rules || true
+  done <"$tmp/old-rules"
+fi
 if [[ "$mode" == 'install' ]]; then systemctl enable tcp-brutal-custom-manager.service tcp-brutal-custom-web.service; fi
 systemctl start tcp-brutal-custom-manager.service tcp-brutal-custom-web.service
 rm -f "$old_short_binary" "$legacy_binary"

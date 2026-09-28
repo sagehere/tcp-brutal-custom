@@ -32,7 +32,7 @@ const (
 	portsPath  = "/proc/net/tcp_brutal/ports"
 )
 
-var version = "2.1.6-dev"
+var version = "2.1.7-dev"
 
 type portConfig struct {
 	Port     uint16  `json:"port"`
@@ -255,16 +255,19 @@ func runCLI(args []string) error {
 		if len(args) == 2 {
 			return restore(args[1])
 		}
-	case "install", "uninstall":
-		mode := "install"
-		if args[0] == "uninstall" {
-			mode = "--uninstall"
-		}
-		cmd := exec.Command("/usr/local/lib/tcp-brutal-custom/install.sh", mode)
+	case "install":
+		cmd := exec.Command("/usr/local/lib/tcp-brutal-custom/install.sh", "install")
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		return cmd.Run()
+	case "uninstall":
+		out, err := exec.Command("systemctl", "start", "--no-block", "tcp-brutal-custom-uninstall.service").CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
+		}
+		fmt.Println("Graceful uninstall started. Existing Brutal connections will drain naturally; removal completes automatically.")
+		return nil
 	case "status", "diagnose":
 		return localRequest("GET", "/api/v1/status", nil)
 	case "ports":
