@@ -112,6 +112,13 @@ func managerMode() error {
 			}
 		}
 	}
+	for _, p := range cfg.ABPorts {
+		if p.Enabled {
+			if err = m.applyABPort(p); err != nil {
+				return fmt.Errorf("restore A/B port %d: %w", p.Port, err)
+			}
+		}
+	}
 	if err = os.MkdirAll("/run/tcp-brutal-canary", 0750); err != nil {
 		return err
 	}
@@ -213,6 +220,81 @@ func baselineOwnsPort(port uint16) bool {
 		}
 	}
 	return false
+}
+
+func baselineManagerOwnsPort(port uint16) bool {
+	b, err := os.ReadFile(baselineConfigPath)
+	if err != nil {
+		return false
+	}
+	var cfg struct {
+		Ports []portConfig `json:"ports"`
+	}
+	if json.Unmarshal(b, &cfg) != nil {
+		return true
+	}
+	for _, p := range cfg.Ports {
+		if p.Port == port && p.Enabled {
+			return true
+		}
+	}
+	return false
+}
+
+func writeBaselinePort(command string) error {
+	f, err := os.OpenFile(baselinePortsPath, os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(command + "\n")
+	return err
+}
+
+func (m *manager) applyABPort(p abPortConfig) error {
+	if err := validatePort(portConfig{Port: p.Port, RateMbps: p.RateMbps, Gain: p.Gain, Enabled: p.Enabled}, m.cfg.WebPort); err != nil {
+		return err
+	}
+	if p.CanaryPercent > 100 {
+		return errors.New("canary percentage must be between 0 and 100")
+	}
+	if baselineManagerOwnsPort(p.Port) {
+		return fmt.Errorf("port %d is configured in baseline manager; remove it there before A/B takeover", p.Port)
+	}
+	for _, cp := range m.cfg.Ports {
+		if cp.Port == p.Port && cp.Enabled {
+			return fmt.Errorf("port %d is already configured as canary-only", p.Port)
+		}
+	}
+	rate := uint64(p.RateMbps*1e6/8 + 0.5)
+	cmd := fmt.Sprintf("add %d rate=%d gain=%d", p.Port, rate, p.Gain)
+	if err := writeBaselinePort(cmd); err != nil {
+		return fmt.Errorf("baseline group: %w", err)
+	}
+	if err := writePort(cmd); err != nil {
+		_ = writeBaselinePort(fmt.Sprintf("del %d", p.Port))
+		return fmt.Errorf("canary group: %w", err)
+	}
+	if err := m.selector.Enable(p.Port, p.CanaryPercent); err != nil {
+		_ = writePort(fmt.Sprintf("del %d", p.Port))
+		_ = writeBaselinePort(fmt.Sprintf("del %d", p.Port))
+		return err
+	}
+	return nil
+}
+
+func (m *manager) disableABPort(port uint16) error {
+	if err := m.selector.Disable(port); err != nil {
+		return err
+	}
+	var first error
+	if err := writePort(fmt.Sprintf("del %d", port)); err != nil {
+		first = err
+	}
+	if err := writeBaselinePort(fmt.Sprintf("del %d", port)); err != nil && first == nil {
+		first = err
+	}
+	return first
 }
 
 func (m *manager) applyPort(p portConfig) error {
@@ -464,6 +546,12 @@ func (m *manager) api(w http.ResponseWriter, r *http.Request) {
 		m.putPort(w, r)
 	case r.Method == "DELETE" && strings.HasPrefix(r.URL.Path, "/api/v1/ports/"):
 		m.deletePort(w, r)
+	case r.Method == "GET" && r.URL.Path == "/api/v1/ab":
+		m.listAB(w, r)
+	case r.Method == "POST" && r.URL.Path == "/api/v1/ab":
+		m.putAB(w, r)
+	case (r.Method == "PUT" || r.Method == "DELETE") && strings.HasPrefix(r.URL.Path, "/api/v1/ab/"):
+		m.changeAB(w, r)
 	case r.Method == "GET" && r.URL.Path == "/api/v1/metrics":
 		m.metrics(w, r)
 	case r.Method == "PUT" && r.URL.Path == "/api/v1/password":
@@ -583,6 +671,123 @@ func (m *manager) deletePort(w http.ResponseWriter, r *http.Request) {
 	m.cfg = next
 	m.history.addEvent("port_delete", previous)
 	jsonReply(w, 200, map[string]any{"deleted": n})
+}
+
+func (m *manager) listAB(w http.ResponseWriter, r *http.Request) {
+	m.mu.Lock()
+	ports := append([]abPortConfig(nil), m.cfg.ABPorts...)
+	m.mu.Unlock()
+	type row struct {
+		abPortConfig
+		Selector selectorCount `json:"selector"`
+	}
+	out := make([]row, 0, len(ports))
+	for _, p := range ports {
+		var c selectorCount
+		if p.Enabled {
+			c, _ = m.selector.Count(p.Port)
+		}
+		out = append(out, row{abPortConfig: p, Selector: c})
+	}
+	jsonReply(w, 200, out)
+}
+
+func (m *manager) putAB(w http.ResponseWriter, r *http.Request) {
+	var p abPortConfig
+	if err := decode(r, &p); err != nil {
+		bad(w, 400, err)
+		return
+	}
+	if p.Gain == 0 {
+		p.Gain = 20
+	}
+	p.Enabled = true
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, v := range m.cfg.ABPorts {
+		if v.Port == p.Port {
+			bad(w, 409, errors.New("A/B port already configured"))
+			return
+		}
+	}
+	if err := m.applyABPort(p); err != nil {
+		bad(w, 500, err)
+		return
+	}
+	next := m.cfg
+	next.ABPorts = append(append([]abPortConfig(nil), m.cfg.ABPorts...), p)
+	if err := saveConfig(next); err != nil {
+		_ = m.disableABPort(p.Port)
+		bad(w, 500, err)
+		return
+	}
+	m.cfg = next
+	m.history.addEvent("ab_add", p)
+	jsonReply(w, 200, p)
+}
+
+func (m *manager) changeAB(w http.ResponseWriter, r *http.Request) {
+	n, err := strconv.ParseUint(strings.TrimPrefix(r.URL.Path, "/api/v1/ab/"), 10, 16)
+	if err != nil || n == 0 {
+		bad(w, 400, errors.New("invalid port"))
+		return
+	}
+	port := uint16(n)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	idx := -1
+	for i, p := range m.cfg.ABPorts {
+		if p.Port == port {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		bad(w, 404, errors.New("A/B port not configured"))
+		return
+	}
+	previous := m.cfg.ABPorts[idx]
+	if r.Method == "DELETE" {
+		if previous.Enabled {
+			if err = m.disableABPort(port); err != nil {
+				bad(w, 500, err)
+				return
+			}
+		}
+		next := m.cfg
+		next.ABPorts = append(append([]abPortConfig(nil), m.cfg.ABPorts[:idx]...), m.cfg.ABPorts[idx+1:]...)
+		if err = saveConfig(next); err != nil {
+			_ = m.applyABPort(previous)
+			bad(w, 500, err)
+			return
+		}
+		m.cfg = next
+		m.history.addEvent("ab_delete", previous)
+		jsonReply(w, 200, map[string]any{"deleted": port})
+		return
+	}
+	var in struct {
+		CanaryPercent uint8 `json:"canary_percent"`
+	}
+	if err = decode(r, &in); err != nil || in.CanaryPercent > 100 {
+		bad(w, 400, errors.New("invalid canary percentage"))
+		return
+	}
+	if err = m.selector.Enable(port, in.CanaryPercent); err != nil {
+		bad(w, 500, err)
+		return
+	}
+	next := m.cfg
+	next.ABPorts = append([]abPortConfig(nil), m.cfg.ABPorts...)
+	next.ABPorts[idx].CanaryPercent = in.CanaryPercent
+	if err = saveConfig(next); err != nil {
+		_ = m.selector.Enable(port, previous.CanaryPercent)
+		bad(w, 500, err)
+		return
+	}
+	m.cfg = next
+	m.history.addEvent("ab_percent", map[string]any{"port": port, "before": previous.CanaryPercent, "after": in.CanaryPercent})
+	jsonReply(w, 200, next.ABPorts[idx])
 }
 
 func (m *manager) metrics(w http.ResponseWriter, r *http.Request) {
