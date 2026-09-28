@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestManagerRoutesRegisterWithoutConflict(t *testing.T) {
@@ -61,6 +63,23 @@ func TestSendBytesAndConnectionParsing(t *testing.T) {
 	}
 	if _, err = parseConnections([]byte("broken line"), 443); err == nil {
 		t.Fatal("malformed ss output accepted")
+	}
+}
+
+func TestDeletePortIgnoresInactiveGroup(t *testing.T) {
+	got := ""
+	if err := deletePort(func(command string) error {
+		got = command
+		return unix.ENOENT
+	}, 5281); err != nil {
+		t.Fatalf("inactive delete returned %v", err)
+	}
+	if got != "del 5281" {
+		t.Fatalf("delete command=%q", got)
+	}
+	want := errors.New("write failed")
+	if err := deletePort(func(string) error { return want }, 5281); !errors.Is(err, want) {
+		t.Fatalf("delete error=%v want=%v", err, want)
 	}
 }
 
