@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -159,6 +160,36 @@ func setPassword(c *config, password string) error {
 	c.PasswordSalt = salt
 	saltBytes, _ := hex.DecodeString(salt)
 	c.PasswordHash = hex.EncodeToString(argon2.IDKey([]byte(password), saltBytes, 3, 64*1024, 4, 32))
+	return nil
+}
+
+func passwordMatches(c config, password string) bool {
+	salt, err := hex.DecodeString(c.PasswordSalt)
+	if err != nil {
+		return false
+	}
+	hash, err := hex.DecodeString(c.PasswordHash)
+	if err != nil || len(hash) == 0 {
+		return false
+	}
+	candidate := argon2.IDKey([]byte(password), salt, 3, 64*1024, 4, 32)
+	return subtle.ConstantTimeCompare(candidate, hash) == 1
+}
+
+func persistPassword(c *config, password string) error {
+	previous := *c
+	next := *c
+	if err := setPassword(&next, password); err != nil {
+		return err
+	}
+	if err := saveConfig(next); err != nil {
+		return err
+	}
+	if err := savePanelPassword(password); err != nil {
+		_ = saveConfig(previous)
+		return err
+	}
+	*c = next
 	return nil
 }
 
