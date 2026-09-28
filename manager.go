@@ -1215,7 +1215,6 @@ func (m *manager) startUpdate(w http.ResponseWriter, r *http.Request) {
 	bad(w, http.StatusNotImplemented, errors.New("Canary self-update is disabled; use install-canary.sh from the canary branch"))
 }
 
-
 func (m *manager) updateJobState(state, detail string) {
 	m.mu.Lock()
 	m.job.State = state
@@ -1239,7 +1238,6 @@ func (m *manager) checkUpdate(w http.ResponseWriter, r *http.Request) {
 		"url":       "",
 	})
 }
-
 
 func (m *manager) performUpdate(id string) {
 	m.updateJobState("failed", "Canary self-update is disabled; use install-canary.sh")
