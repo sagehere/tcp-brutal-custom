@@ -43,9 +43,12 @@ type event struct {
 }
 
 type history struct {
-	db   *sql.DB
-	dir  string
-	last map[string]sample
+	db             *sql.DB
+	dir            string
+	last           map[string]sample
+	abLast         map[string]abCohortSample
+	abSelectorLast map[uint16]selectorCount
+	abEpoch        map[uint16]int64
 }
 
 func openHistory() (*history, error) {
@@ -73,7 +76,11 @@ func openHistoryAt(dir string) (*history, error) {
 			return nil, err
 		}
 	}
-	h := &history{db: db, dir: dir, last: map[string]sample{}}
+	h := &history{db: db, dir: dir, last: map[string]sample{}, abLast: map[string]abCohortSample{}, abSelectorLast: map[uint16]selectorCount{}, abEpoch: map[uint16]int64{}}
+	if err := h.initAB(); err != nil {
+		db.Close()
+		return nil, err
+	}
 	rows, err := db.Query("SELECT port,group_id,sent,acked,retrans,success,failure,rtt_sum,rtt_samples FROM checkpoints")
 	if err != nil {
 		db.Close()
@@ -171,6 +178,9 @@ func (h *history) prune() error {
 		}
 	}
 	if _, err := h.db.Exec("DELETE FROM events WHERE ts<?", now-365*86400); err != nil {
+		return err
+	}
+	if err := h.pruneAB(); err != nil {
 		return err
 	}
 	path := filepath.Join(h.dir, "history.db")
