@@ -27,6 +27,7 @@
 #define ADAPTIVE_PROBE_PERCENT 125
 #define ADAPTIVE_PROBE_INTERVAL_US (1 * USEC_PER_SEC)
 #define ADAPTIVE_PROBE_HOLD_US (500 * USEC_PER_MSEC)
+#define ADAPTIVE_PROBE_UTIL_PERCENT 85
 #define ADAPTIVE_CONFIRM_SAMPLES 2
 #define ADAPTIVE_NOLOSS_CONFIRM_SAMPLES 4
 
@@ -137,7 +138,9 @@ static void brutal_update_adaptive(struct sock *sk, const struct rate_sample *rs
     // mismatch-only evidence cannot immediately undo the probe; clear RTT
     // congestion still can.
     if (ceiling && !READ_ONCE(st->congestion_limited) &&
-        now - st->last_probe_us >= ADAPTIVE_PROBE_INTERVAL_US)
+        now - st->last_probe_us >= ADAPTIVE_PROBE_INTERVAL_US &&
+        (!st->last_delivery_rate ||
+         st->last_delivery_rate * 100 >= ceiling * ADAPTIVE_PROBE_UTIL_PERCENT))
     {
         u64 probed = div_u64(ceiling * ADAPTIVE_PROBE_PERCENT, 100);
 
@@ -181,6 +184,7 @@ static void brutal_update_adaptive(struct sock *sk, const struct rate_sample *rs
 
     delivery_rate = mul_u64_u64_div_u64(acked, USEC_PER_SEC, elapsed);
     delivery_rate = min_t(u64, delivery_rate, MAX_PACING_RATE);
+    st->last_delivery_rate = delivery_rate;
 
     mismatch = delivery_rate * 100 < configured * ADAPTIVE_TRIGGER_RATE_PERCENT;
     if (brutal->group)
