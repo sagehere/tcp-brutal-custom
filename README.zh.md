@@ -89,7 +89,7 @@ curl -fsSL https://raw.githubusercontent.com/sagehere/tcp-brutal-custom/main/scr
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sagehere/tcp-brutal-custom/main/scripts/bootstrap.sh | \
-  sudo env TCP_BRUTAL_RELEASE_TAG=v2.1.8 bash
+  sudo env TCP_BRUTAL_RELEASE_TAG=v2.1.9 bash
 ```
 
 > **首次安装的信任边界：** `bootstrap.sh` 本身仍来自本 GitHub 仓库。如果你的威胁模型包含“首次安装前整个 GitHub 仓库/账号已经被接管”，仍应通过独立可信渠道核对下方公钥指纹后再授予 root 权限。安装成功后公钥会固定在本机，后续普通更新不会重新从 GitHub 建立信任根。
@@ -502,3 +502,15 @@ GPL-3.0，详见 [LICENSE](LICENSE)。
 ### 中文交互菜单与密码重置
 
 直接执行 `sudo tbc2` 会进入中文交互菜单。Web 管理面板的“面板设置”中既可以手动修改登录密码，也可以点击“重置登录密码”生成新的高强度随机密码。重置成功后，所有已登录会话会立即失效，新密码只在本次重置响应中显示一次，请立即保存。
+
+
+### 命令行面板管理
+
+中文交互菜单中的面板相关功能统一归口到“面板管理”子菜单：
+
+- 面板网络设置
+- 查看当前登录密码
+- 重置登录密码
+- 修改登录密码
+
+“查看当前登录密码”仅允许本机 root CLI 使用，Web API 不提供读取当前密码的接口。新版本会把当前有效密码额外保存到 root-only、权限为 `0600` 的本地文件，同时继续使用 Argon2 哈希进行登录认证。由旧版本升级而来的安装只保存了不可逆哈希，因此历史密码无法恢复；第一次查看时会提示先重置一次，之后即可查看当前有效密码。备份/恢复会同步保存该密码记录并校验其与 Argon2 哈希一致。
