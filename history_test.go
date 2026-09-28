@@ -154,7 +154,7 @@ func TestABHistoryEpochsAndReport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]bool{"manifest.json": false, "epochs.csv": false, "cohort_samples.csv": false, "selector_samples.csv": false, "summary.csv": false, "analysis_rules.json": false}
+	want := map[string]bool{"manifest.json": false, "epochs.csv": false, "cohort_samples.csv": false, "selector_samples.csv": false, "summary.csv": false, "comparison.csv": false, "analysis_plan.json": false, "analysis_rules.json": false}
 	for _, zf := range zr.File {
 		if _, ok := want[zf.Name]; ok {
 			want[zf.Name] = true
@@ -179,5 +179,39 @@ func TestABHistoryEpochsAndReport(t *testing.T) {
 		if !ok {
 			t.Fatalf("report missing %s", name)
 		}
+	}
+}
+
+
+func TestABComparisonReadinessRejectsShortImbalancedEpoch(t *testing.T) {
+	policy := defaultABAnalysisPolicy()
+	rows := []abSummary{
+		{EpochID: 9, Port: 443, Cohort: "baseline", CanaryPercent: 50, DurationSeconds: 60, AssignedConnections: 5, GoodputPerMemberMbps: 10},
+		{EpochID: 9, Port: 443, Cohort: "canary", CanaryPercent: 50, DurationSeconds: 60, AssignedConnections: 15, GoodputPerMemberMbps: 9},
+	}
+	got := buildABComparisons(rows, policy)
+	if len(got) != 1 {
+		t.Fatalf("comparisons=%+v", got)
+	}
+	if got[0].NetworkReady || got[0].ApplicationReady {
+		t.Fatalf("short imbalanced epoch unexpectedly ready: %+v", got[0])
+	}
+	if got[0].ActualCanaryPercent != 75 {
+		t.Fatalf("actual canary percent=%v", got[0].ActualCanaryPercent)
+	}
+	if len(got[0].Reasons) == 0 {
+		t.Fatal("missing readiness reasons")
+	}
+}
+
+func TestABComparisonReadinessAcceptsHealthyEpoch(t *testing.T) {
+	policy := defaultABAnalysisPolicy()
+	rows := []abSummary{
+		{EpochID: 10, Port: 443, Cohort: "baseline", CanaryPercent: 50, DurationSeconds: 3600, AssignedConnections: 1000, AppRequests: 5000, GapSamples: 0},
+		{EpochID: 10, Port: 443, Cohort: "canary", CanaryPercent: 50, DurationSeconds: 3600, AssignedConnections: 1000, AppRequests: 5000, GapSamples: 0},
+	}
+	got := buildABComparisons(rows, policy)
+	if len(got) != 1 || !got[0].NetworkReady || !got[0].ApplicationReady {
+		t.Fatalf("healthy epoch not ready: %+v", got)
 	}
 }
