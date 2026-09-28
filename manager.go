@@ -297,6 +297,28 @@ func (m *manager) applyABPort(p abPortConfig) error {
 	return nil
 }
 
+func (m *manager) seedABNow(port uint16) error {
+	baselineStates, err := parsePortsAt(baselinePortsPath)
+	if err != nil {
+		return err
+	}
+	canaryStates, err := parsePortsAt(portsPath)
+	if err != nil {
+		return err
+	}
+	base, bok := findPortState(baselineStates, port)
+	canary, cok := findPortState(canaryStates, port)
+	if !bok || !cok {
+		return fmt.Errorf("missing A/B cohort state baseline=%v canary=%v", bok, cok)
+	}
+	c, err := m.selector.Count(port)
+	if err != nil {
+		return err
+	}
+	base.Port, canary.Port = port, port
+	return m.history.seedAB(port, base, canary, c)
+}
+
 func (m *manager) disableABPort(port uint16) error {
 	if err := m.selector.Disable(port); err != nil {
 		return err
@@ -789,6 +811,8 @@ func (m *manager) putAB(w http.ResponseWriter, r *http.Request) {
 	m.cfg = next
 	if _, err := m.history.beginABEpoch(p, "ab_add"); err != nil {
 		log.Printf("A/B epoch start %d: %v", p.Port, err)
+	} else if err := m.seedABNow(p.Port); err != nil {
+		log.Printf("A/B epoch seed %d: %v", p.Port, err)
 	}
 	m.history.addEvent("ab_add", p)
 	jsonReply(w, 200, p)
@@ -859,6 +883,8 @@ func (m *manager) changeAB(w http.ResponseWriter, r *http.Request) {
 	m.cfg = next
 	if _, err := m.history.beginABEpoch(next.ABPorts[idx], "percentage_change"); err != nil {
 		log.Printf("A/B epoch change %d: %v", port, err)
+	} else if err := m.seedABNow(port); err != nil {
+		log.Printf("A/B epoch seed %d: %v", port, err)
 	}
 	m.history.addEvent("ab_percent", map[string]any{"port": port, "before": previous.CanaryPercent, "after": in.CanaryPercent})
 	jsonReply(w, 200, next.ABPorts[idx])
