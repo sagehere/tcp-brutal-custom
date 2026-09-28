@@ -59,6 +59,13 @@ func backup() (string, error) {
 	if err = add(configPath(), "config.json"); err == nil {
 		err = add(snapshot, "history.db")
 	}
+	if err == nil {
+		if _, statErr := os.Stat(panelPasswordFile); statErr == nil {
+			err = add(panelPasswordFile, "panel-password")
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			err = statErr
+		}
+	}
 	if e := zw.Close(); err == nil {
 		err = e
 	}
@@ -92,7 +99,7 @@ func restore(name string) error {
 	defer os.RemoveAll(temp)
 	found := map[string]bool{}
 	for _, f := range z.File {
-		if f.Name != "config.json" && f.Name != "history.db" {
+		if f.Name != "config.json" && f.Name != "history.db" && f.Name != "panel-password" {
 			return errors.New("unexpected archive entry")
 		}
 		if found[f.Name] || f.UncompressedSize64 > 1<<30 {
@@ -135,6 +142,16 @@ func restore(name string) error {
 	if cfg.WebPort == 0 || cfg.PasswordHash == "" {
 		return errors.New("invalid backup configuration")
 	}
+	if found["panel-password"] {
+		b, readErr := os.ReadFile(filepath.Join(temp, "panel-password"))
+		if readErr != nil {
+			return readErr
+		}
+		password := strings.TrimSpace(string(b))
+		if password == "" || !passwordMatches(cfg, password) {
+			return errors.New("backup panel password does not match configuration")
+		}
+	}
 	db, err := sql.Open("sqlite", filepath.Join(temp, "history.db"))
 	if err != nil {
 		return err
@@ -153,6 +170,7 @@ func restore(name string) error {
 	currentDB := filepath.Join(dataDir, "history.db")
 	oldConfig := configPath() + ".restore-old"
 	oldDB := currentDB + ".restore-old"
+	oldPassword := panelPasswordFile + ".restore-old"
 	if err = os.Rename(configPath(), oldConfig); err != nil {
 		return err
 	}
@@ -160,10 +178,26 @@ func restore(name string) error {
 		os.Rename(oldConfig, configPath())
 		return err
 	}
+	hadPassword := false
+	if _, statErr := os.Stat(panelPasswordFile); statErr == nil {
+		if err = os.Rename(panelPasswordFile, oldPassword); err != nil {
+			os.Rename(oldDB, currentDB)
+			os.Rename(oldConfig, configPath())
+			return err
+		}
+		hadPassword = true
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		os.Rename(oldDB, currentDB)
+		os.Rename(oldConfig, configPath())
+		return statErr
+	}
 	os.Remove(currentDB + "-wal")
 	os.Remove(currentDB + "-shm")
 	if err = os.Rename(filepath.Join(temp, "config.json"), configPath()); err == nil {
 		err = os.Rename(filepath.Join(temp, "history.db"), currentDB)
+	}
+	if err == nil && found["panel-password"] {
+		err = os.Rename(filepath.Join(temp, "panel-password"), panelPasswordFile)
 	}
 	if err == nil {
 		out, e := exec.Command("systemctl", append([]string{"start"}, services...)...).CombinedOutput()
@@ -175,11 +209,18 @@ func restore(name string) error {
 		exec.Command("systemctl", append([]string{"stop"}, services...)...).Run()
 		os.Remove(configPath())
 		os.Remove(currentDB)
+		os.Remove(panelPasswordFile)
 		os.Rename(oldConfig, configPath())
 		os.Rename(oldDB, currentDB)
+		if hadPassword {
+			os.Rename(oldPassword, panelPasswordFile)
+		}
 		return err
 	}
 	os.Remove(oldConfig)
 	os.Remove(oldDB)
+	if hadPassword {
+		os.Remove(oldPassword)
+	}
 	return nil
 }

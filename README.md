@@ -77,7 +77,7 @@ To pin a specific signed release instead of `latest`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sagehere/tcp-brutal-custom/main/scripts/bootstrap.sh | \
-  sudo env TCP_BRUTAL_RELEASE_TAG=v2.1.8 bash
+  sudo env TCP_BRUTAL_RELEASE_TAG=v2.1.9 bash
 ```
 
 > **First-install trust boundary:** the bootstrap itself comes from this GitHub repository. If your threat model includes a full compromise of the repository/account before first installation, independently verify the release-key fingerprint below before granting root privileges. Existing installations pin the key locally, so normal updates do not re-bootstrap trust from GitHub.
@@ -405,3 +405,8 @@ Updates and uninstalls use a drain-first maintenance flow. The system stops crea
 ### Chinese interactive menu and password reset
 
 Running `sudo tbc2` opens a Chinese interactive menu. The Web panel's Settings page supports both setting a chosen login password and resetting it to a newly generated high-entropy password. A reset invalidates all existing sessions and displays the generated password only in the reset response.
+
+
+### Panel management in the CLI
+
+The Chinese interactive menu now groups panel operations under **Panel Management**. Local root users can configure the panel listener, view the current login password, reset it to a new random password, or set a chosen password. The view operation reads a root-only `0600` local password record; no Web API exposes the current password. Installations upgraded from versions that only stored an Argon2 hash cannot recover the historical password and must reset it once before it can be viewed.
