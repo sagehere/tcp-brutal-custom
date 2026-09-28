@@ -73,6 +73,7 @@ struct brutal_stats_state
     u64 sample_start_us;
     u64 last_probe_us;
     u64 candidate_ceiling;
+    u64 last_delivery_rate;
 
     u32 min_rtt_us;
     u32 recent_losses;
