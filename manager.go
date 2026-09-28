@@ -798,35 +798,9 @@ func (m *manager) autostartStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *manager) startUpdate(w http.ResponseWriter, r *http.Request) {
-	// Maintenance update disconnects managed TCP sessions and replaces a kernel
-	// module. Keep that high-impact action local to a root caller on the Unix
-	// socket; authenticated Web sessions may only check for updates.
-	if r.Context().Value(peerKey{}) != uint32(0) {
-		bad(w, 403, errors.New("maintenance update requires local root CLI"))
-		return
-	}
-	m.mu.Lock()
-	if m.job.State == "running" || exec.Command("systemctl", "is-active", "--quiet", "tcp-brutal-canary-update.service").Run() == nil {
-		m.mu.Unlock()
-		bad(w, 409, errors.New("update already running"))
-		return
-	}
-	id, err := randomToken(8)
-	if err != nil {
-		m.mu.Unlock()
-		bad(w, 500, err)
-		return
-	}
-	if err = os.WriteFile(dataDir+"/update-id", []byte(id), 0600); err != nil {
-		m.mu.Unlock()
-		bad(w, 500, err)
-		return
-	}
-	m.job = updateJob{ID: id, State: "running", Started: time.Now().Unix()}
-	m.mu.Unlock()
-	go m.performUpdate(id)
-	jsonReply(w, 202, map[string]string{"job_id": id})
+	bad(w, http.StatusNotImplemented, errors.New("Canary self-update is disabled; use install-canary.sh from the canary branch"))
 }
+
 
 func (m *manager) updateJobState(state, detail string) {
 	m.mu.Lock()
@@ -844,42 +818,15 @@ type updateJob struct {
 }
 
 func (m *manager) checkUpdate(w http.ResponseWriter, r *http.Request) {
-	client := &http.Client{Timeout: 8 * time.Second}
-	request, err := http.NewRequestWithContext(r.Context(), "GET", "https://api.github.com/repos/sagehere/tcp-brutal-custom/releases/latest", nil)
-	if err != nil {
-		bad(w, 500, err)
-		return
-	}
-	request.Header.Set("Accept", "application/vnd.github+json")
-	response, err := client.Do(request)
-	if err != nil {
-		bad(w, 502, err)
-		return
-	}
-	defer response.Body.Close()
-	if response.StatusCode != 200 {
-		bad(w, 502, fmt.Errorf("GitHub returned %d", response.StatusCode))
-		return
-	}
-	var release struct {
-		Tag  string `json:"tag_name"`
-		Body string `json:"body"`
-		URL  string `json:"html_url"`
-	}
-	if err = json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&release); err != nil {
-		bad(w, 502, err)
-		return
-	}
-	jsonReply(w, 200, map[string]string{"installed": version, "latest": release.Tag, "notes": release.Body, "url": release.URL})
+	jsonReply(w, http.StatusOK, map[string]string{
+		"installed": version,
+		"latest":    version,
+		"notes":     "Canary releases are managed separately from baseline; use install-canary.sh.",
+		"url":       "",
+	})
 }
 
+
 func (m *manager) performUpdate(id string) {
-	// A dedicated systemd unit owns module replacement so this manager can
-	// report the job and the work survives a browser disconnect.
-	out, err := exec.Command("systemctl", "start", "--no-block", "tcp-brutal-canary-update.service").CombinedOutput()
-	if err != nil {
-		m.updateJobState("failed", fmt.Sprintf("%s: %v", out, err))
-		return
-	}
-	m.updateJobState("running", "maintenance unit started")
+	m.updateJobState("failed", "Canary self-update is disabled; use install-canary.sh")
 }
