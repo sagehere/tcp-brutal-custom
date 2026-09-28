@@ -414,6 +414,45 @@ func runCLI(args []string) error {
 			b, _ := json.Marshal(portConfig{Port: uint16(port), RateMbps: rate, Gain: gain, Enabled: true})
 			return localRequest("POST", "/api/v1/ports", strings.NewReader(string(b)))
 		}
+	case "ab":
+		if len(args) == 2 && args[1] == "list" {
+			return localRequest("GET", "/api/v1/ab", nil)
+		}
+		if len(args) >= 3 && args[1] == "del" {
+			return localRequest("DELETE", "/api/v1/ab/"+args[2], nil)
+		}
+		if len(args) == 4 && args[1] == "set" {
+			percent, e := strconv.ParseUint(args[3], 10, 8)
+			if e != nil || percent > 100 {
+				return errors.New("invalid canary percentage")
+			}
+			b, _ := json.Marshal(map[string]uint8{"canary_percent": uint8(percent)})
+			return localRequest("PUT", "/api/v1/ab/"+args[2], strings.NewReader(string(b)))
+		}
+		if len(args) >= 5 && args[1] == "add" {
+			port, e := strconv.ParseUint(args[2], 10, 16)
+			if e != nil {
+				return e
+			}
+			rate, e := strconv.ParseFloat(args[3], 64)
+			if e != nil {
+				return e
+			}
+			percent, e := strconv.ParseUint(args[4], 10, 8)
+			if e != nil || percent > 100 {
+				return errors.New("invalid canary percentage")
+			}
+			gain := uint32(20)
+			if len(args) > 5 {
+				v, e := strconv.ParseUint(strings.TrimPrefix(args[5], "gain="), 10, 32)
+				if e != nil {
+					return e
+				}
+				gain = uint32(v)
+			}
+			b, _ := json.Marshal(abPortConfig{Port: uint16(port), RateMbps: rate, Gain: gain, CanaryPercent: uint8(percent), Enabled: true})
+			return localRequest("POST", "/api/v1/ab", strings.NewReader(string(b)))
+		}
 	case "password":
 		if len(args) == 2 && args[1] == "show" {
 			password, err := loadPanelPassword()
@@ -458,7 +497,7 @@ func runCLI(args []string) error {
 			return localRequest("PUT", "/api/v1/autostart", strings.NewReader(string(b)))
 		}
 	}
-	return errors.New("usage: tbc2 [manager|web|init [panel-port]|status|ports|port add PORT Mbps [gain=20]|port del PORT|password NEW|update|autostart on|autostart off]")
+	return errors.New("usage: tbc2-canary [status|ports|port add PORT Mbps [gain=20]|port del PORT|ab list|ab add PORT Mbps PERCENT [gain=20]|ab set PORT PERCENT|ab del PORT|password ...]")
 }
 
 func panelManagementMenu() error {
