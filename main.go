@@ -44,13 +44,22 @@ type portConfig struct {
 	Enabled  bool    `json:"enabled"`
 }
 
+type abPortConfig struct {
+	Port          uint16  `json:"port"`
+	RateMbps      float64 `json:"rate_mbps"`
+	Gain          uint32  `json:"gain"`
+	CanaryPercent uint8   `json:"canary_percent"`
+	Enabled       bool    `json:"enabled"`
+}
+
 type config struct {
 	WebHost      string       `json:"web_host"`
 	WebPort      uint16       `json:"web_port"`
 	AllowedIPs   []string     `json:"allowed_ips"`
 	PasswordSalt string       `json:"password_salt"`
 	PasswordHash string       `json:"password_hash"`
-	Ports        []portConfig `json:"ports"`
+	Ports        []portConfig   `json:"ports"`
+	ABPorts      []abPortConfig `json:"ab_ports,omitempty"`
 }
 
 func configPath() string { return filepath.Join(configDir, "config.json") }
