@@ -22,6 +22,7 @@
 // token bursts do not dominate the estimate.
 #define ADAPTIVE_SAMPLE_INTERVAL_US (500 * USEC_PER_MSEC)
 #define ADAPTIVE_TRIGGER_RATE_PERCENT 80
+#define ADAPTIVE_LOW_UTIL_PERCENT 80
 #define ADAPTIVE_HEADROOM_PERCENT 120
 #define ADAPTIVE_PROBE_PERCENT 110
 #define ADAPTIVE_PROBE_INTERVAL_US (2 * USEC_PER_SEC)
@@ -183,7 +184,8 @@ static void brutal_update_adaptive(struct sock *sk, const struct rate_sample *rs
     // members, require RTT congestion so normal group sharing is not mistaken
     // for a slow path.
     if (st->recent_loss_percent >= CONGESTION_LOSS_PERCENT && group_safe &&
-        (READ_ONCE(st->congestion_limited) || mismatch))
+        ((!ceiling && mismatch) || READ_ONCE(st->congestion_limited) ||
+         (ceiling && delivery_rate * 100 < ceiling * ADAPTIVE_LOW_UTIL_PERCENT)))
     {
         bool probe_hold = ceiling && now - st->last_probe_us < ADAPTIVE_PROBE_HOLD_US;
 
