@@ -453,8 +453,6 @@ func (m *manager) api(w http.ResponseWriter, r *http.Request) {
 		m.changePassword(w, r)
 	case r.Method == "POST" && r.URL.Path == "/api/v1/password/reset":
 		m.resetPassword(w, r)
-	case r.Method == "POST" && r.URL.Path == "/api/v1/password/reset":
-		m.resetPassword(w, r)
 	case r.Method == "PUT" && r.URL.Path == "/api/v1/settings":
 		m.settings(w, r)
 	case r.Method == "PUT" && r.URL.Path == "/api/v1/autostart":
