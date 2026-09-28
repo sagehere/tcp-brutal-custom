@@ -453,6 +453,8 @@ func (m *manager) api(w http.ResponseWriter, r *http.Request) {
 		m.changePassword(w, r)
 	case r.Method == "POST" && r.URL.Path == "/api/v1/password/reset":
 		m.resetPassword(w, r)
+	case r.Method == "POST" && r.URL.Path == "/api/v1/password/reset":
+		m.resetPassword(w, r)
 	case r.Method == "PUT" && r.URL.Path == "/api/v1/settings":
 		m.settings(w, r)
 	case r.Method == "PUT" && r.URL.Path == "/api/v1/autostart":
@@ -641,6 +643,32 @@ func (m *manager) changePassword(w http.ResponseWriter, r *http.Request) {
 	m.sessions = map[string]session{}
 	m.history.addEvent("password_change", map[string]bool{"changed": true})
 	jsonReply(w, 200, map[string]bool{"changed": true})
+}
+
+func (m *manager) resetPassword(w http.ResponseWriter, r *http.Request) {
+	password, err := randomToken(18)
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	m.mu.Lock()
+	next := m.cfg
+	if err = setPassword(&next, password); err != nil {
+		m.mu.Unlock()
+		bad(w, 500, err)
+		return
+	}
+	if err = saveConfig(next); err != nil {
+		m.mu.Unlock()
+		bad(w, 500, err)
+		return
+	}
+	m.cfg = next
+	m.sessions = map[string]session{}
+	m.attempts = map[string]attempt{}
+	m.mu.Unlock()
+	m.history.addEvent("password_reset", map[string]bool{"reset": true})
+	jsonReply(w, 200, map[string]string{"password": password})
 }
 
 func (m *manager) resetPassword(w http.ResponseWriter, r *http.Request) {
