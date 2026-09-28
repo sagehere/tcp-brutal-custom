@@ -270,5 +270,3 @@ func buildABReport(h *history, port uint16, from, to int64, tier string) ([]byte
 	}
 	return buf.Bytes(), nil
 }
-
-[executed on device: kr (5928de2c-0d9a-4a94-b93c-5d373f72c8bb)]
