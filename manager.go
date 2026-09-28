@@ -215,6 +215,14 @@ func writePort(command string) error {
 	return err
 }
 
+func deletePort(writer func(string) error, port uint16) error {
+	err := writer(fmt.Sprintf("del %d", port))
+	if errors.Is(err, unix.ENOENT) {
+		return nil
+	}
+	return err
+}
+
 func validatePort(p portConfig, webPort uint16) error {
 	if p.Port == 0 || p.Port == webPort {
 		return errors.New("invalid or panel port")
@@ -298,20 +306,20 @@ func (m *manager) applyABPort(p abPortConfig) error {
 		if err := writeBaselinePort(fmt.Sprintf("add %d rate=%d gain=%d", p.Port, baselineRate, p.Gain)); err != nil {
 			return fmt.Errorf("baseline group: %w", err)
 		}
-	} else if err := writeBaselinePort(fmt.Sprintf("del %d", p.Port)); err != nil {
+	} else if err := deletePort(writeBaselinePort, p.Port); err != nil {
 		return fmt.Errorf("disable baseline group: %w", err)
 	}
 	if canaryRate > 0 {
 		if err := writePort(fmt.Sprintf("add %d rate=%d gain=%d", p.Port, canaryRate, p.Gain)); err != nil {
-			_ = writeBaselinePort(fmt.Sprintf("del %d", p.Port))
+			_ = deletePort(writeBaselinePort, p.Port)
 			return fmt.Errorf("canary group: %w", err)
 		}
-	} else if err := writePort(fmt.Sprintf("del %d", p.Port)); err != nil {
+	} else if err := deletePort(writePort, p.Port); err != nil {
 		return fmt.Errorf("disable canary group: %w", err)
 	}
 	if err := m.selector.Enable(p.Port, p.CanaryPercent); err != nil {
-		_ = writePort(fmt.Sprintf("del %d", p.Port))
-		_ = writeBaselinePort(fmt.Sprintf("del %d", p.Port))
+		_ = deletePort(writePort, p.Port)
+		_ = deletePort(writeBaselinePort, p.Port)
 		return err
 	}
 	return nil
@@ -344,10 +352,10 @@ func (m *manager) disableABPort(port uint16) error {
 		return err
 	}
 	var first error
-	if err := writePort(fmt.Sprintf("del %d", port)); err != nil {
+	if err := deletePort(writePort, port); err != nil {
 		first = err
 	}
-	if err := writeBaselinePort(fmt.Sprintf("del %d", port)); err != nil && first == nil {
+	if err := deletePort(writeBaselinePort, port); err != nil && first == nil {
 		first = err
 	}
 	return first
@@ -374,7 +382,7 @@ func (m *manager) disablePort(port uint16) error {
 	if err := m.selector.Disable(port); err != nil {
 		return err
 	}
-	if err := writePort(fmt.Sprintf("del %d", port)); err != nil {
+	if err := deletePort(writePort, port); err != nil {
 		m.selector.Enable(port, 100)
 		return err
 	}
