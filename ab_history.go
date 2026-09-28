@@ -410,6 +410,27 @@ func (h *history) abSelectorSamples(tier string, port uint16, from, to int64) ([
 	return out,rows.Err()
 }
 
+func (h *history) abAppSamples(tier string, port uint16, from, to int64) ([]abAppSample, error) {
+	if tier != "raw" && tier != "minute" && tier != "hour" {
+		return nil, fmt.Errorf("invalid tier")
+	}
+	rows, err := h.db.Query(`SELECT ts,epoch_id,port,cohort,source,requests,success,errors,latency_sum_us,latency_samples,latency_max_us
+		FROM ab_app_samples WHERE tier=? AND port=? AND ts>=? AND ts<? ORDER BY ts,epoch_id,cohort,source`, tier, port, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []abAppSample
+	for rows.Next() {
+		var x abAppSample
+		if err := rows.Scan(&x.Time, &x.EpochID, &x.Port, &x.Cohort, &x.Source, &x.Requests, &x.Success, &x.Errors, &x.LatencySumUS, &x.LatencySamples, &x.LatencyMaxUS); err != nil {
+			return nil, err
+		}
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
 func (h *history) abSummaries(port uint16, from,to int64) ([]abSummary,error){
 	rows,err:=h.db.Query(`SELECT s.epoch_id,s.port,s.cohort,e.canary_percent,
 		SUM(s.duration_sec),SUM(s.member_seconds),SUM(s.sent),SUM(s.acked),SUM(s.retrans),
