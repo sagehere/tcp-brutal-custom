@@ -162,7 +162,7 @@ func restore(name string) error {
 	if err != nil || integrity != "ok" {
 		return errors.New("invalid history database")
 	}
-	services := []string{"tcp-brutal-custom-manager.service", "tcp-brutal-custom-web.service"}
+	services := []string{"tcp-brutal-canary-manager.service", "tcp-brutal-canary-web.service"}
 	if out, e := exec.Command("systemctl", append([]string{"stop"}, services...)...).CombinedOutput(); e != nil {
 		return fmt.Errorf("stop services: %s: %w", out, e)
 	}
