@@ -22,7 +22,7 @@
 // token bursts do not dominate the estimate.
 #define ADAPTIVE_SAMPLE_INTERVAL_US (500 * USEC_PER_MSEC)
 #define ADAPTIVE_TRIGGER_RATE_PERCENT 80
-#define ADAPTIVE_HEADROOM_PERCENT 110
+#define ADAPTIVE_HEADROOM_PERCENT 120
 #define ADAPTIVE_PROBE_PERCENT 110
 #define ADAPTIVE_PROBE_INTERVAL_US (2 * USEC_PER_SEC)
 #define ADAPTIVE_PROBE_HOLD_US (1 * USEC_PER_SEC)
@@ -190,7 +190,7 @@ static void brutal_update_adaptive(struct sock *sk, const struct rate_sample *rs
         if (!probe_hold || READ_ONCE(st->congestion_limited))
         {
             // Convert unique delivered bytes back to an estimated wire-rate
-            // need using the observed loss, then keep 10% probing headroom.
+            // need using the observed loss, then keep 20% adaptive headroom.
             // This avoids under-driving lossy links (for example, 5% random
             // loss would otherwise turn a 100 Mbps path into an ~90 Mbps cap).
             target = div_u64(delivery_rate * 100,
