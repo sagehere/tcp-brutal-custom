@@ -946,7 +946,9 @@ func (m *manager) abSummaryAPI(w http.ResponseWriter, r *http.Request) {
 		bad(w, 500, err)
 		return
 	}
-	jsonReply(w, 200, map[string]any{"port": port, "from": from, "to": to, "epochs": epochs, "summaries": rows})
+	policy := defaultABAnalysisPolicy()
+	comparisons := buildABComparisons(rows, policy)
+	jsonReply(w, 200, map[string]any{"port": port, "from": from, "to": to, "epochs": epochs, "summaries": rows, "analysis_policy": policy, "comparisons": comparisons})
 }
 
 func (m *manager) abReportAPI(w http.ResponseWriter, r *http.Request) {
