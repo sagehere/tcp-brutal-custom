@@ -143,7 +143,7 @@ static int brutal_set_params(struct sock *sk, sockptr_t optval, unsigned int opt
     }
     brutal->rate = params.rate;
     brutal->cwnd_gain = params.cwnd_gain;
-    brutal_update_rate(sk);
+    brutal_update_rate(sk, NULL);
     release_sock(sk);
 
     return 0;

@@ -67,8 +67,16 @@ struct brutal_stats_state
     u64 sent;
     u64 acked;
     u64 retrans;
+
+    u64 adaptive_ceiling;
+    u64 sample_start_acked;
+    u64 sample_start_us;
+    u64 last_probe_us;
+
     u32 min_rtt_us;
+    u8 recent_loss_percent;
     u8 congestion_limited;
+    u8 sample_active;
 };
 
 // Per-socket state, lives in icsk_ca_priv
@@ -98,7 +106,7 @@ struct brutal_params
 
 // brutal_cc.c: the congestion control
 extern struct tcp_congestion_ops tcp_brutal_ops;
-void brutal_update_rate(struct sock *sk);
+void brutal_update_rate(struct sock *sk, const struct rate_sample *rs);
 void brutal_stats_flush(struct sock *sk);
 
 // brutal_sockopt.c: groups and the application interface

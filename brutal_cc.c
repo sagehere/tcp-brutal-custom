@@ -17,15 +17,32 @@
 // Suppress loss compensation once SRTT reaches 1.25x the minimum observed SRTT.
 #define CONGESTION_RTT_PERCENT 125
 
+// Phase-two per-socket adaptive ceiling. Delivery rate is measured over a
+// relatively long interval after loss so ACK compression and initial policer
+// token bursts do not dominate the estimate.
+#define ADAPTIVE_SAMPLE_INTERVAL_US (500 * USEC_PER_MSEC)
+#define ADAPTIVE_TRIGGER_RATE_PERCENT 80
+#define ADAPTIVE_HEADROOM_PERCENT 110
+#define ADAPTIVE_PROBE_PERCENT 110
+#define ADAPTIVE_PROBE_INTERVAL_US (2 * USEC_PER_SEC)
+#define ADAPTIVE_PROBE_HOLD_US (1 * USEC_PER_SEC)
+
 // An unused reserved slot is returned to the group this long after its time
 #define RESV_STALE_NS (20 * NSEC_PER_MSEC)
 // Max lag of the group clock behind real time (token bucket depth)
 #define GROUP_MAX_LAG_NS (2 * NSEC_PER_MSEC)
 
-// Configured rate compensated for this socket's loss
-static u64 brutal_effective_rate(const struct brutal *brutal)
+static u64 brutal_configured_rate(const struct brutal *brutal)
 {
-    u64 rate = brutal->group ? READ_ONCE(brutal->group->rate) : brutal->rate;
+    return brutal->group ? READ_ONCE(brutal->group->rate) : brutal->rate;
+}
+
+// Configured rate compensated for random loss, before any phase-two per-socket
+// adaptive ceiling. The group clock uses this rate so one slow socket does not
+// lower the budget available to the other members.
+static u64 brutal_compensated_rate(const struct brutal *brutal)
+{
+    u64 rate = brutal_configured_rate(brutal);
     u64 compensated, ceiling;
 
     // Loss plus queue growth is treated as congestion, not random loss. In
@@ -36,6 +53,17 @@ static u64 brutal_effective_rate(const struct brutal *brutal)
     compensated = div_u64(rate * 100, brutal->ack_rate);
     ceiling = div_u64(rate * MAX_LOSS_COMPENSATION_PERCENT, 100);
     return min_t(u64, compensated, ceiling);
+}
+
+static u64 brutal_socket_rate(const struct brutal *brutal)
+{
+    u64 rate = brutal_compensated_rate(brutal);
+    u64 adaptive;
+
+    if (!brutal->stats)
+        return rate;
+    adaptive = READ_ONCE(brutal->stats->adaptive_ceiling);
+    return adaptive ? min(rate, adaptive) : rate;
 }
 
 // Account from TCP's own payload counters. The last flush is on CA release,
@@ -71,7 +99,110 @@ void brutal_stats_flush(struct sock *sk)
     st->retrans = retrans;
 }
 
-void brutal_update_rate(struct sock *sk)
+static void brutal_adaptive_sample_start(struct tcp_sock *tp, struct brutal_stats_state *st)
+{
+    st->sample_start_acked = tp->bytes_acked;
+    st->sample_start_us = tp->tcp_mstamp;
+    st->sample_active = 1;
+}
+
+static void brutal_update_adaptive(struct sock *sk, const struct rate_sample *rs)
+{
+    struct tcp_sock *tp = tcp_sk(sk);
+    struct brutal *brutal = inet_csk_ca(sk);
+    struct brutal_stats_state *st = brutal->stats;
+    u64 configured, now, elapsed, acked, delivery_rate, target, current;
+    bool loss_signal, mismatch, group_safe;
+    u32 members = 1;
+
+    if (!st || !rs || rs->delivered <= 0 || rs->interval_us <= 0)
+        return;
+
+    now = tp->tcp_mstamp;
+    configured = brutal_configured_rate(brutal);
+
+    // An application-limited interval is not evidence of path capacity.
+    if (rs->is_app_limited)
+    {
+        st->sample_active = 0;
+        return;
+    }
+
+    current = READ_ONCE(st->adaptive_ceiling);
+
+    // A capped socket periodically probes upward. During the hold interval,
+    // mismatch-only evidence cannot immediately undo the probe; clear RTT
+    // congestion still can.
+    if (current && !READ_ONCE(st->congestion_limited) &&
+        now - st->last_probe_us >= ADAPTIVE_PROBE_INTERVAL_US)
+    {
+        u64 probed = div_u64(current * ADAPTIVE_PROBE_PERCENT, 100);
+
+        if (probed >= configured)
+            WRITE_ONCE(st->adaptive_ceiling, 0);
+        else
+            WRITE_ONCE(st->adaptive_ceiling, max(probed, current + 1));
+        st->last_probe_us = now;
+        current = READ_ONCE(st->adaptive_ceiling);
+    }
+
+    loss_signal = rs->losses || st->recent_loss_percent >= CONGESTION_LOSS_PERCENT ||
+                  READ_ONCE(st->congestion_limited);
+    if (!st->sample_active)
+    {
+        if (loss_signal)
+            brutal_adaptive_sample_start(tp, st);
+        return;
+    }
+
+    if (now <= st->sample_start_us)
+    {
+        brutal_adaptive_sample_start(tp, st);
+        return;
+    }
+    elapsed = now - st->sample_start_us;
+    if (elapsed < ADAPTIVE_SAMPLE_INTERVAL_US)
+        return;
+
+    acked = tp->bytes_acked - st->sample_start_acked;
+    st->sample_active = 0;
+    if (!acked)
+        return;
+
+    delivery_rate = mul_u64_u64_div_u64(acked, USEC_PER_SEC, elapsed);
+    delivery_rate = min_t(u64, delivery_rate, MAX_PACING_RATE);
+
+    mismatch = delivery_rate * 100 < configured * ADAPTIVE_TRIGGER_RATE_PERCENT;
+    if (brutal->group)
+        members = READ_ONCE(brutal->group->members);
+    group_safe = members <= 1 || READ_ONCE(st->congestion_limited);
+
+    // For a single active member, persistent loss plus a large gap between
+    // configured and delivered rate is enough to identify a likely policer or
+    // client-side bottleneck even without RTT inflation. With multiple group
+    // members, require RTT congestion so normal group sharing is not mistaken
+    // for a slow path.
+    if (st->recent_loss_percent >= CONGESTION_LOSS_PERCENT && group_safe &&
+        (READ_ONCE(st->congestion_limited) || mismatch))
+    {
+        bool probe_hold = current && now - st->last_probe_us < ADAPTIVE_PROBE_HOLD_US;
+
+        if (!probe_hold || READ_ONCE(st->congestion_limited))
+        {
+            target = div_u64(delivery_rate * ADAPTIVE_HEADROOM_PERCENT, 100);
+            target = clamp_t(u64, target, MIN_PACING_RATE, configured);
+            current = READ_ONCE(st->adaptive_ceiling);
+            if (!current || target < current)
+                WRITE_ONCE(st->adaptive_ceiling, target);
+            st->last_probe_us = now;
+        }
+    }
+
+    if (loss_signal)
+        brutal_adaptive_sample_start(tp, st);
+}
+
+void brutal_update_rate(struct sock *sk, const struct rate_sample *rs)
 {
     struct tcp_sock *tp = tcp_sk(sk);
     struct brutal *brutal = inet_csk_ca(sk);
@@ -101,6 +232,8 @@ void brutal_update_rate(struct sock *sk)
             ack_rate = MIN_ACK_RATE_PERCENT;
     }
     brutal->ack_rate = ack_rate;
+    if (brutal->stats)
+        brutal->stats->recent_loss_percent = samples ? min_t(u32, losses * 100 / samples, 100) : 0;
 
     rtt_us = tp->srtt_us >> 3;
     base_rtt_us = rtt_us;
@@ -118,7 +251,9 @@ void brutal_update_rate(struct sock *sk)
                        (u64)rtt_us * 100 >= (u64)base_rtt_us * CONGESTION_RTT_PERCENT);
     }
 
-    rate = brutal_effective_rate(brutal);
+    brutal_update_adaptive(sk, rs);
+
+    rate = brutal_socket_rate(brutal);
     cwnd_gain = brutal->group ? READ_ONCE(brutal->group->cwnd_gain) : brutal->cwnd_gain;
 
     // Size inflight from the minimum observed SRTT rather than the current
@@ -169,13 +304,14 @@ static void brutal_group_reserve(struct sock *sk)
     struct brutal *brutal = inet_csk_ca(sk);
     struct brutal_group *g = brutal->group;
     u64 now = tp->tcp_clock_cache;
-    u64 rate, start;
+    u64 group_rate, socket_rate, start;
     u32 unsent, burst;
 
     if (!g)
         return;
 
-    rate = brutal_effective_rate(brutal);
+    group_rate = brutal_compensated_rate(brutal);
+    socket_rate = brutal_socket_rate(brutal);
 
     // Settle the previous reservation against what was actually sent
     if (brutal->resv_bytes)
@@ -193,9 +329,9 @@ static void brutal_group_reserve(struct sock *sk)
         delta = (s64)sent - (s64)brutal->resv_bytes; // < 0: give time back
         spin_lock_bh(&g->lock);
         if (delta >= 0)
-            g->next_ns += div64_u64((u64)delta * NSEC_PER_SEC, rate);
+            g->next_ns += div64_u64((u64)delta * NSEC_PER_SEC, group_rate);
         else
-            g->next_ns -= div64_u64((u64)(-delta) * NSEC_PER_SEC, rate);
+            g->next_ns -= div64_u64((u64)(-delta) * NSEC_PER_SEC, group_rate);
         spin_unlock_bh(&g->lock);
         brutal->resv_bytes = 0;
     }
@@ -213,11 +349,11 @@ static void brutal_group_reserve(struct sock *sk)
     if (tcp_packets_in_flight(tp) >= tp->snd_cwnd || !after(tcp_wnd_end(tp), tp->snd_nxt))
         return;
 
-    burst = brutal_burst_estimate(sk, rate, unsent);
+    burst = brutal_burst_estimate(sk, socket_rate, unsent);
 
     spin_lock_bh(&g->lock);
     start = max(g->next_ns, now - GROUP_MAX_LAG_NS);
-    g->next_ns = start + div64_u64((u64)burst * NSEC_PER_SEC, rate);
+    g->next_ns = start + div64_u64((u64)burst * NSEC_PER_SEC, group_rate);
     spin_unlock_bh(&g->lock);
 
     brutal->resv_start_ns = start;
@@ -269,7 +405,7 @@ static void brutal_init(struct sock *sk)
     if (!brutal->group)
         brutal_apply_rule(sk, brutal);
     if (brutal->group)
-        brutal_update_rate(sk);
+        brutal_update_rate(sk, NULL);
 
     // Pacing is REQUIRED for Brutal to work
     cmpxchg(&sk->sk_pacing_status, SK_PACING_NONE, SK_PACING_NEEDED);
@@ -316,7 +452,7 @@ static void brutal_main(struct sock *sk, const struct rate_sample *rs)
         brutal->slots[slot].losses = rs->losses;
     }
 
-    brutal_update_rate(sk);
+    brutal_update_rate(sk, rs);
     brutal_stats_flush(sk);
 }
 
