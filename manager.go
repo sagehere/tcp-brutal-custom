@@ -611,6 +611,12 @@ func (m *manager) api(w http.ResponseWriter, r *http.Request) {
 		m.putAB(w, r)
 	case (r.Method == "PUT" || r.Method == "DELETE") && strings.HasPrefix(r.URL.Path, "/api/v1/ab/"):
 		m.changeAB(w, r)
+	case r.Method == "GET" && r.URL.Path == "/api/v1/ab/summary":
+		m.abSummaryAPI(w, r)
+	case r.Method == "GET" && r.URL.Path == "/api/v1/ab/report":
+		m.abReportAPI(w, r)
+	case r.Method == "POST" && r.URL.Path == "/api/v1/ab/app-metrics":
+		m.abAppMetricsAPI(w, r)
 	case r.Method == "GET" && r.URL.Path == "/api/v1/metrics":
 		m.metrics(w, r)
 	case r.Method == "PUT" && r.URL.Path == "/api/v1/password":
@@ -856,6 +862,93 @@ func (m *manager) changeAB(w http.ResponseWriter, r *http.Request) {
 	}
 	m.history.addEvent("ab_percent", map[string]any{"port": port, "before": previous.CanaryPercent, "after": in.CanaryPercent})
 	jsonReply(w, 200, next.ABPorts[idx])
+}
+
+func abRange(r *http.Request) (uint16, int64, int64, error) {
+	q := r.URL.Query()
+	pv, err := strconv.ParseUint(q.Get("port"), 10, 16)
+	if err != nil || pv == 0 {
+		return 0, 0, 0, errors.New("valid port is required")
+	}
+	to, _ := strconv.ParseInt(q.Get("to"), 10, 64)
+	if to == 0 {
+		to = time.Now().Unix()
+	}
+	from, _ := strconv.ParseInt(q.Get("from"), 10, 64)
+	if from == 0 {
+		from = to - 24*3600
+	}
+	if from >= to || to-from > 366*86400 {
+		return 0, 0, 0, errors.New("invalid time range")
+	}
+	return uint16(pv), from, to, nil
+}
+
+func (m *manager) abSummaryAPI(w http.ResponseWriter, r *http.Request) {
+	port, from, to, err := abRange(r)
+	if err != nil {
+		bad(w, 400, err)
+		return
+	}
+	rows, err := m.history.abSummaries(port, from, to)
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	epochs, err := m.history.abEpochs(port, from, to)
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	jsonReply(w, 200, map[string]any{"port": port, "from": from, "to": to, "epochs": epochs, "summaries": rows})
+}
+
+func (m *manager) abReportAPI(w http.ResponseWriter, r *http.Request) {
+	port, from, to, err := abRange(r)
+	if err != nil {
+		bad(w, 400, err)
+		return
+	}
+	tier := r.URL.Query().Get("tier")
+	if tier == "" {
+		tier = "minute"
+	}
+	data, err := buildABReport(m.history, port, from, to, tier)
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	name := fmt.Sprintf("brutal-ab-port-%d-%d-%d.zip", port, from, to)
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", name))
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+func (m *manager) abAppMetricsAPI(w http.ResponseWriter, r *http.Request) {
+	var x abAppSample
+	if err := decode(r, &x); err != nil {
+		bad(w, 400, err)
+		return
+	}
+	if x.Port == 0 || (x.Cohort != "baseline" && x.Cohort != "canary") {
+		bad(w, 400, errors.New("port and cohort are required"))
+		return
+	}
+	if x.Requests != x.Success+x.Errors {
+		bad(w, 400, errors.New("requests must equal success + errors"))
+		return
+	}
+	if x.LatencySamples > x.Requests {
+		bad(w, 400, errors.New("latency_samples cannot exceed requests"))
+		return
+	}
+	if err := m.history.recordABApp(x); err != nil {
+		bad(w, 500, err)
+		return
+	}
+	jsonReply(w, 200, map[string]any{"stored": true, "port": x.Port, "cohort": x.Cohort, "source": x.Source})
 }
 
 func (m *manager) metrics(w http.ResponseWriter, r *http.Request) {
