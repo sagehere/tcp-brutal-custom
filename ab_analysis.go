@@ -95,18 +95,18 @@ func buildABComparisons(summaries []abSummary, policy abAnalysisPolicy) []abComp
 		b, c := p.base, p.can
 		x := abComparison{
 			EpochID: id, Port: b.Port, CanaryPercent: b.CanaryPercent,
-			DurationSeconds: max(b.DurationSeconds, c.DurationSeconds),
+			DurationSeconds:     max(b.DurationSeconds, c.DurationSeconds),
 			BaselineConnections: b.AssignedConnections, CanaryConnections: c.AssignedConnections,
-			SelectorFailures: max(b.SelectorFailures, c.SelectorFailures),
+			SelectorFailures:       max(b.SelectorFailures, c.SelectorFailures),
 			BaselineRetransPercent: b.RetransPercent, CanaryRetransPercent: c.RetransPercent,
-			RetransDeltaPP: c.RetransPercent - b.RetransPercent,
+			RetransDeltaPP:    c.RetransPercent - b.RetransPercent,
 			BaselineMeanRTTMS: b.MeanRTTMS, CanaryMeanRTTMS: c.MeanRTTMS,
-			MeanRTTDeltaPercent: pctDelta(c.MeanRTTMS, b.MeanRTTMS),
+			MeanRTTDeltaPercent:      pctDelta(c.MeanRTTMS, b.MeanRTTMS),
 			BaselineGoodputPerMember: b.GoodputPerMemberMbps, CanaryGoodputPerMember: c.GoodputPerMemberMbps,
 			GoodputPerMemberDeltaPct: pctDelta(c.GoodputPerMemberMbps, b.GoodputPerMemberMbps),
-			BaselineAppRequests: b.AppRequests, CanaryAppRequests: c.AppRequests,
+			BaselineAppRequests:      b.AppRequests, CanaryAppRequests: c.AppRequests,
 			BaselineAppSuccessPercent: b.AppSuccessPercent, CanaryAppSuccessPercent: c.AppSuccessPercent,
-			AppSuccessDeltaPP: c.AppSuccessPercent - b.AppSuccessPercent,
+			AppSuccessDeltaPP:        c.AppSuccessPercent - b.AppSuccessPercent,
 			BaselineAppMeanLatencyMS: b.AppMeanLatencyMS, CanaryAppMeanLatencyMS: c.AppMeanLatencyMS,
 			AppMeanLatencyDeltaPct: pctDelta(c.AppMeanLatencyMS, b.AppMeanLatencyMS),
 		}
@@ -165,3 +165,5 @@ func buildABComparisons(summaries []abSummary, policy abAnalysisPolicy) []abComp
 	}
 	return out
 }
+
+[executed on device: kr (5928de2c-0d9a-4a94-b93c-5d373f72c8bb)]
