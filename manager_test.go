@@ -66,6 +66,28 @@ func TestSendBytesAndConnectionParsing(t *testing.T) {
 	}
 }
 
+func TestFindPortStatePrefersActiveGroup(t *testing.T) {
+	states := []portState{
+		{Port: 5281, Group: 1, Active: false},
+		{Port: 5281, Group: 2, Active: true},
+	}
+	got, ok := findPortState(states, 5281)
+	if !ok || !got.Active || got.Group != 2 {
+		t.Fatalf("state=%+v ok=%v", got, ok)
+	}
+}
+
+func TestABCohortStatesAllowZeroShareToBeAbsent(t *testing.T) {
+	canary := []portState{{Port: 5281, Group: 7, Active: true}}
+	base, gotCanary, err := abCohortStates(abPortConfig{Port: 5281, CanaryPercent: 100}, nil, canary)
+	if err != nil || base.Port != 5281 || base.Group != 0 || gotCanary.Group != 7 {
+		t.Fatalf("100%% states base=%+v canary=%+v err=%v", base, gotCanary, err)
+	}
+	if _, _, err = abCohortStates(abPortConfig{Port: 5281, CanaryPercent: 50}, nil, canary); err == nil {
+		t.Fatal("50% accepted a missing baseline cohort")
+	}
+}
+
 func TestDeletePortIgnoresInactiveGroup(t *testing.T) {
 	got := ""
 	if err := deletePort(func(command string) error {
