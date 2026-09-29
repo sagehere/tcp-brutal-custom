@@ -144,6 +144,23 @@ func (h *history) initAB() error {
 			max_mean_rtt_delta_percent REAL NOT NULL, min_goodput_delta_percent REAL NOT NULL,
 			bootstrap_block_minutes INTEGER NOT NULL, predeclared INTEGER NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS ab_rollouts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, port INTEGER NOT NULL, created_ts INTEGER NOT NULL, ended_ts INTEGER,
+			status TEXT NOT NULL, stages_json TEXT NOT NULL, observation_window_seconds INTEGER NOT NULL,
+			current_stage_index INTEGER NOT NULL, current_epoch_id INTEGER, current_stage_id INTEGER
+		)`,
+		`CREATE INDEX IF NOT EXISTS ab_rollouts_port_time ON ab_rollouts(port,created_ts)`,
+		`CREATE TABLE IF NOT EXISTS ab_rollout_stages (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, rollout_id INTEGER NOT NULL, stage_index INTEGER NOT NULL,
+			canary_percent INTEGER NOT NULL, epoch_id INTEGER NOT NULL, started_ts INTEGER NOT NULL,
+			observation_ends_ts INTEGER NOT NULL, ended_ts INTEGER, end_reason TEXT, final_state TEXT
+		)`,
+		`CREATE INDEX IF NOT EXISTS ab_rollout_stages_rollout ON ab_rollout_stages(rollout_id,id)`,
+		`CREATE TABLE IF NOT EXISTS ab_rollout_events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, rollout_id INTEGER NOT NULL, port INTEGER NOT NULL, ts INTEGER NOT NULL,
+			action TEXT NOT NULL, from_percent INTEGER NOT NULL, to_percent INTEGER NOT NULL, epoch_id INTEGER, detail TEXT
+		)`,
+		`CREATE INDEX IF NOT EXISTS ab_rollout_events_rollout ON ab_rollout_events(rollout_id,id)`,
 	} {
 		if _, err := h.db.Exec(q); err != nil {
 			return err
@@ -154,11 +171,11 @@ func (h *history) initAB() error {
 		return err
 	}
 	switch schemaVersion {
-	case "1":
-		if _, err := h.db.Exec("UPDATE ab_meta SET value='2' WHERE key='schema_version'"); err != nil {
+	case "1", "2":
+		if _, err := h.db.Exec("UPDATE ab_meta SET value='3' WHERE key='schema_version'"); err != nil {
 			return err
 		}
-	case "2":
+	case "3":
 	default:
 		return fmt.Errorf("unsupported A/B schema version %q", schemaVersion)
 	}
