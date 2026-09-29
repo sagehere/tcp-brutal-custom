@@ -24,6 +24,9 @@ func TestManagerRoutesRegisterWithoutConflict(t *testing.T) {
 	if !strings.Contains(root.Body.String(), "重置登录密码") {
 		t.Fatal("panel password reset control missing")
 	}
+	if !strings.Contains(root.Body.String(), "A/B 实验") || !strings.Contains(root.Body.String(), "abAnalysis") {
+		t.Fatal("A/B dashboard controls missing")
+	}
 
 	api := httptest.NewRecorder()
 	h.ServeHTTP(api, httptest.NewRequest(http.MethodGet, "/api/v1/status", nil))
