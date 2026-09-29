@@ -27,6 +27,9 @@ func TestManagerRoutesRegisterWithoutConflict(t *testing.T) {
 	if !strings.Contains(root.Body.String(), "A/B 实验") || !strings.Contains(root.Body.String(), "abAnalysis") {
 		t.Fatal("A/B dashboard controls missing")
 	}
+	if !strings.Contains(root.Body.String(), "abDecision") || !strings.Contains(root.Body.String(), "abPlanNI") {
+		t.Fatal("A/B statistical review controls missing")
+	}
 
 	api := httptest.NewRecorder()
 	h.ServeHTTP(api, httptest.NewRequest(http.MethodGet, "/api/v1/status", nil))
