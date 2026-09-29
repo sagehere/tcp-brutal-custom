@@ -392,6 +392,19 @@ func (h *history) recordABApp(x abAppSample) error {
 	return tx.Commit()
 }
 
+func (h *history) abPorts() ([]uint16, error) {
+	rows, err := h.db.Query("SELECT DISTINCT port FROM ab_epochs ORDER BY port")
+	if err != nil { return nil, err }
+	defer rows.Close()
+	var out []uint16
+	for rows.Next() {
+		var port uint16
+		if err := rows.Scan(&port); err != nil { return nil, err }
+		out = append(out, port)
+	}
+	return out, rows.Err()
+}
+
 func (h *history) abEpochs(port uint16, from, to int64) ([]abEpoch, error) {
 	rows, err := h.db.Query(`SELECT id,port,started_ts,COALESCE(ended_ts,0),canary_percent,rate_mbps,gain,code_version,reason
 		FROM ab_epochs WHERE port=? AND started_ts<? AND COALESCE(ended_ts,?)>=? ORDER BY id`,port,to,to,from)
