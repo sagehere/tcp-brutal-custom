@@ -27,13 +27,13 @@ import (
 )
 
 const (
-	configDir         = "/etc/tcp-brutal-canary"
-	dataDir           = "/var/lib/tcp-brutal-canary"
-	socketPath        = "/run/tcp-brutal-canary/manager.sock"
-	portsPath         = "/proc/net/tcp_brutal_canary/ports"
-	baselinePortsPath = "/proc/net/tcp_brutal/ports"
+	configDir          = "/etc/tcp-brutal-canary"
+	dataDir            = "/var/lib/tcp-brutal-canary"
+	socketPath         = "/run/tcp-brutal-canary/manager.sock"
+	portsPath          = "/proc/net/tcp_brutal_canary/ports"
+	baselinePortsPath  = "/proc/net/tcp_brutal/ports"
 	baselineConfigPath = "/etc/tcp-brutal-custom/config.json"
-	panelPasswordFile = "/etc/tcp-brutal-canary/panel-password"
+	panelPasswordFile  = "/etc/tcp-brutal-canary/panel-password"
 )
 
 var version = "2.1.9-canary-dev"
@@ -46,19 +46,20 @@ type portConfig struct {
 }
 
 type abPortConfig struct {
-	Port          uint16  `json:"port"`
-	RateMbps      float64 `json:"rate_mbps"`
-	Gain          uint32  `json:"gain"`
-	CanaryPercent uint8   `json:"canary_percent"`
-	Enabled       bool    `json:"enabled"`
+	Port          uint16            `json:"port"`
+	RateMbps      float64           `json:"rate_mbps"`
+	Gain          uint32            `json:"gain"`
+	CanaryPercent uint8             `json:"canary_percent"`
+	Enabled       bool              `json:"enabled"`
+	AnalysisPlan  *abExperimentPlan `json:"analysis_plan,omitempty"`
 }
 
 type config struct {
-	WebHost      string       `json:"web_host"`
-	WebPort      uint16       `json:"web_port"`
-	AllowedIPs   []string     `json:"allowed_ips"`
-	PasswordSalt string       `json:"password_salt"`
-	PasswordHash string       `json:"password_hash"`
+	WebHost      string         `json:"web_host"`
+	WebPort      uint16         `json:"web_port"`
+	AllowedIPs   []string       `json:"allowed_ips"`
+	PasswordSalt string         `json:"password_salt"`
+	PasswordHash string         `json:"password_hash"`
 	Ports        []portConfig   `json:"ports"`
 	ABPorts      []abPortConfig `json:"ab_ports,omitempty"`
 }
@@ -76,6 +77,13 @@ func loadConfig() (config, error) {
 	}
 	if c.WebHost == "" || c.WebPort == 0 {
 		return c, errors.New("invalid panel address")
+	}
+	for i := range c.ABPorts {
+		plan, e := effectiveABExperimentPlan(c.ABPorts[i].AnalysisPlan)
+		if e != nil {
+			return c, fmt.Errorf("invalid A/B analysis plan for port %d: %w", c.ABPorts[i].Port, e)
+		}
+		c.ABPorts[i].AnalysisPlan = &plan
 	}
 	return c, nil
 }
@@ -461,6 +469,26 @@ func runCLI(args []string) error {
 			return localRequest("POST", "/api/v1/ports", strings.NewReader(string(b)))
 		}
 	case "ab":
+		if len(args) >= 3 && args[1] == "analysis" {
+			port, e := strconv.ParseUint(args[2], 10, 16)
+			if e != nil || port == 0 {
+				return errors.New("invalid port")
+			}
+			to := time.Now().Unix()
+			from := to - 24*3600
+			if len(args) == 5 {
+				from, e = strconv.ParseInt(args[3], 10, 64)
+				if e != nil {
+					return e
+				}
+				to, e = strconv.ParseInt(args[4], 10, 64)
+				if e != nil {
+					return e
+				}
+			}
+			path := fmt.Sprintf("/api/v1/ab/analysis?port=%d&from=%d&to=%d", port, from, to)
+			return localRequest("GET", path, nil)
+		}
 		if len(args) >= 3 && args[1] == "summary" {
 			port, e := strconv.ParseUint(args[2], 10, 16)
 			if e != nil || port == 0 {
@@ -529,14 +557,48 @@ func runCLI(args []string) error {
 				return errors.New("invalid canary percentage")
 			}
 			gain := uint32(20)
-			if len(args) > 5 {
-				v, e := strconv.ParseUint(strings.TrimPrefix(args[5], "gain="), 10, 32)
+			plan := defaultABExperimentPlan()
+			for _, opt := range args[5:] {
+				parts := strings.SplitN(opt, "=", 2)
+				if len(parts) != 2 {
+					return fmt.Errorf("invalid A/B option %q", opt)
+				}
+				switch parts[0] {
+				case "gain":
+					v, e := strconv.ParseUint(parts[1], 10, 32)
+					if e != nil {
+						return e
+					}
+					gain = uint32(v)
+				case "success":
+					plan.ExpectedAppSuccessPercent, e = strconv.ParseFloat(parts[1], 64)
+				case "ni":
+					plan.AppSuccessNIMarginPP, e = strconv.ParseFloat(parts[1], 64)
+				case "retrans":
+					plan.MaxRetransDeltaPP, e = strconv.ParseFloat(parts[1], 64)
+				case "rtt":
+					plan.MaxMeanRTTDeltaPercent, e = strconv.ParseFloat(parts[1], 64)
+				case "goodput":
+					plan.MinGoodputDeltaPercent, e = strconv.ParseFloat(parts[1], 64)
+				case "block":
+					var v int64
+					v, e = strconv.ParseInt(parts[1], 10, 32)
+					plan.BootstrapBlockMinutes = int(v)
+				case "alpha":
+					plan.Alpha, e = strconv.ParseFloat(parts[1], 64)
+				case "power":
+					plan.Power, e = strconv.ParseFloat(parts[1], 64)
+				default:
+					return fmt.Errorf("unknown A/B option %q", parts[0])
+				}
 				if e != nil {
 					return e
 				}
-				gain = uint32(v)
 			}
-			b, _ := json.Marshal(abPortConfig{Port: uint16(port), RateMbps: rate, Gain: gain, CanaryPercent: uint8(percent), Enabled: true})
+			if _, e = effectiveABExperimentPlan(&plan); e != nil {
+				return e
+			}
+			b, _ := json.Marshal(abPortConfig{Port: uint16(port), RateMbps: rate, Gain: gain, CanaryPercent: uint8(percent), Enabled: true, AnalysisPlan: &plan})
 			return localRequest("POST", "/api/v1/ab", strings.NewReader(string(b)))
 		}
 	case "password":
@@ -583,7 +645,7 @@ func runCLI(args []string) error {
 			return localRequest("PUT", "/api/v1/autostart", strings.NewReader(string(b)))
 		}
 	}
-	return errors.New("usage: tbc2-canary [status|ports|port add ...|ab list|ab add PORT Mbps PERCENT|ab set PORT PERCENT|ab del PORT|ab summary PORT [FROM TO]|ab export PORT FILE [FROM TO]|password ...]")
+	return errors.New("usage: tbc2-canary [status|ports|port add ...|ab list|ab add PORT Mbps PERCENT [gain=N success=PCT ni=PP retrans=PP rtt=PCT goodput=PCT block=MIN alpha=A power=P]|ab set PORT PERCENT|ab del PORT|ab summary PORT [FROM TO]|ab analysis PORT [FROM TO]|ab export PORT FILE [FROM TO]|password ...]")
 }
 
 func panelManagementMenu() error {
