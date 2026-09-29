@@ -1,8 +1,9 @@
 let csrf = sessionStorage.getItem('csrf') || '';
 let current = null;
 let settingsDirty = false;
-let abState = {experiments:[], ports:[], summary:null, series:null, statistics:null, rollout:null, selectedEpoch:0};
+let abState = {experiments:[], ports:[], summary:null, series:null, statistics:null, rollout:null, safety:null, selectedEpoch:0};
 let abRolloutDeadlineTimer = null;
+let abSafetyRefreshTimer = null;
 const el = id => document.getElementById(id);
 const mb = n => (Number(n || 0) / 1e6).toFixed(1) + ' MB';
 const message = (value, error = false) => { el('notice').textContent = value; el('notice').classList.toggle('error', error); };
@@ -270,7 +271,9 @@ function renderABExperiments() {
       ['App 非劣界限', x.analysis_plan ? '-'+Number(x.analysis_plan.app_success_ni_margin_pp).toFixed(2)+' pp' : '默认'],
       ['Bootstrap', x.analysis_plan ? x.analysis_plan.bootstrap_block_minutes+' 分钟' : '默认'],
       ['阶段编排', x.rollout_plan ? x.rollout_plan.stages.join('→')+'%' : '手动'],
-      ['观察窗口', x.rollout_plan ? abDuration(x.rollout_plan.observation_window_seconds) : '—']
+      ['观察窗口', x.rollout_plan ? abDuration(x.rollout_plan.observation_window_seconds) : '—'],
+      ['安全窗口', x.safety_plan ? abDuration(x.safety_plan.window_seconds) : '默认'],
+      ['安全 Selector 上限', x.safety_plan ? Number(x.safety_plan.max_selector_failure_percent).toFixed(2)+'%' : '默认']
     ];
     for (const pair of values) {
       const span=document.createElement('span'), b=document.createElement('b');
@@ -310,6 +313,123 @@ async function removeABExperiment(port, control) {
   });
 }
 
+
+function abSafetyStateZH(state) {
+  return {
+    clear:'安全窗口正常',
+    warming_up:'安全窗口采样中',
+    warning:'安全护栏告警',
+    critical:'Critical · 建议回退',
+    not_comparable:'当前比例不做双组安全比较',
+    unavailable:'安全状态不可用'
+  }[state] || state || '无安全状态';
+}
+function abSafetyCodeZH(code) {
+  return {
+    selector_failure:'Selector failure',
+    data_gap:'数据缺口',
+    retrans_regression:'重传恶化',
+    rtt_regression:'RTT 恶化',
+    app_error_regression:'应用错误率恶化',
+    app_latency_regression:'应用延迟恶化'
+  }[code] || code;
+}
+function abSafetyMetric(value, digits=2, suffix='') {
+  const n=Number(value);
+  return Number.isFinite(n) ? n.toFixed(digits)+suffix : '—';
+}
+async function runABSafetyRollback(control) {
+  const port=Number(el('abPort').value);
+  const exp=abState.experiments.find(x=>Number(x.port)===port);
+  if (!exp) return;
+  if (!confirm('安全护栏建议回退。确认把之后建立的新连接切回 0% Canary？现有连接会自然结束。')) return;
+  await busy(control,async()=>{
+    if (exp.rollout_plan) await api('/api/v1/ab/rollout/'+port+'/rollback','POST',{});
+    else await api('/api/v1/ab/'+port,'PUT',{canary_percent:0});
+    abState.selectedEpoch=0;
+    message('已人工执行安全回退到 0% Canary');
+    await refreshAB();
+  });
+}
+function renderABSafety() {
+  const box=el('abSafety'), tbody=el('abSafetyAlerts');
+  box.replaceChildren(); tbody.replaceChildren();
+  const v=abState.safety;
+  if (!v) {
+    const p=document.createElement('p'); p.className='muted'; p.textContent='该端口当前没有活动安全窗口；历史告警仍保存在导出包中。';
+    box.append(p);
+    const row=tbody.insertRow(),td=row.insertCell(); td.colSpan=5; td.className='empty'; td.textContent='无活动安全状态';
+    return;
+  }
+  const e=v.evaluation||{}, m=e.metrics||{}, plan=e.plan||{};
+  const top=document.createElement('div'); top.className='row spread';
+  const badge=document.createElement('span');
+  badge.className='ab-state '+(e.status==='critical'?'bad':e.status==='warning'||e.status==='warming_up'?'wait':e.status==='not_comparable'?'info':'');
+  badge.textContent=abSafetyStateZH(e.status);
+  const note=document.createElement('span'); note.className='hint';
+  note.textContent='最近 '+abDuration(plan.window_seconds||0)+' · hard block '+(e.hard_block?'ON':'OFF');
+  top.append(badge,note); box.append(top);
+
+  const grid=document.createElement('div'); grid.className='decision-grid';
+  grid.append(
+    abDecisionBox('最近新连接',String(m.assigned_connections||0),'最少 '+(plan.min_assigned_connections||0)),
+    abDecisionBox('Selector failure',abSafetyMetric(m.selector_failure_percent,3,'%'),'上限 '+abSafetyMetric(plan.max_selector_failure_percent,3,'%')),
+    abDecisionBox('Gap 样本',String(m.gap_samples||0),'允许 ≤ '+(plan.max_gap_samples||0)),
+    abDecisionBox('重传差',m.network_comparable?abSafetyMetric(m.retrans_delta_pp,3,' pp'):'未形成双组网络样本','上限 +'+abSafetyMetric(plan.max_retrans_delta_pp,3,' pp')),
+    abDecisionBox('RTT 相对变化',m.network_comparable?abSafetyMetric(m.mean_rtt_delta_percent,2,'%'):'未形成双组网络样本','上限 +'+abSafetyMetric(plan.max_mean_rtt_delta_percent,1,'%')),
+    abDecisionBox('应用错误率差',m.application_comparable?abSafetyMetric(m.app_error_delta_pp,3,' pp'):'应用样本不足','上限 +'+abSafetyMetric(plan.max_app_error_delta_pp,3,' pp')),
+    abDecisionBox('应用延迟变化',m.application_comparable?abSafetyMetric(m.app_latency_delta_percent,2,'%'):'应用样本不足','上限 +'+abSafetyMetric(plan.max_app_latency_delta_percent,1,'%'))
+  );
+  box.append(grid);
+
+  if (e.breaches?.length) {
+    const ul=document.createElement('ul'); ul.className='reason-list';
+    for (const b of e.breaches) {
+      const li=document.createElement('li');
+      li.textContent=(b.severity==='critical'?'CRITICAL · ':'WARNING · ')+abSafetyCodeZH(b.code)+'：'+b.message;
+      ul.append(li);
+    }
+    box.append(ul);
+  } else if (e.reasons?.length) {
+    const ul=document.createElement('ul'); ul.className='reason-list';
+    for (const reason of e.reasons) { const li=document.createElement('li'); li.textContent=reason; ul.append(li); }
+    box.append(ul);
+  }
+  if (e.rollback_recommended) {
+    const row=document.createElement('div'); row.className='row'; row.style.marginTop='14px';
+    const b=button('人工回退到 0%','danger',()=>runABSafetyRollback(b));
+    const t=document.createElement('span'); t.className='hint'; t.textContent='系统只给出建议，不会自动执行回退。';
+    row.append(b,t); box.append(row);
+  }
+
+  const alerts=[...(v.recent_alerts||[])].sort((a,b)=>Number(b.first_seen)-Number(a.first_seen));
+  if (!alerts.length) {
+    const row=tbody.insertRow(),td=row.insertCell(); td.colSpan=5; td.className='empty'; td.textContent='最近 24 小时无持久化安全告警';
+  } else {
+    for (const a of alerts) {
+      const row=tbody.insertRow();
+      cell(row,a.active?'活动':'已清除');
+      cell(row,a.severity||'—');
+      cell(row,abSafetyCodeZH(a.code)+' · '+(a.message||''));
+      cell(row,abTime(a.first_seen));
+      cell(row,a.active?abTime(a.last_seen):(a.cleared?abTime(a.cleared):abTime(a.last_seen)));
+    }
+  }
+}
+function scheduleABSafetyRefresh() {
+  if (abSafetyRefreshTimer) { clearTimeout(abSafetyRefreshTimer); abSafetyRefreshTimer=null; }
+  const port=Number(el('abPort').value);
+  if (!port || !abState.experiments.some(x=>Number(x.port)===port)) return;
+  abSafetyRefreshTimer=setTimeout(async()=>{
+    abSafetyRefreshTimer=null;
+    try {
+      abState.safety=await optionalJSON('/api/v1/ab/safety?port='+port);
+      abState.rollout=await optionalJSON('/api/v1/ab/rollout?port='+port);
+      renderABSafety(); renderABRollout();
+    } catch(e) { message(e.message,true); }
+    scheduleABSafetyRefresh();
+  },15000);
+}
 
 function scheduleABRolloutDeadlineRefresh() {
   if (abRolloutDeadlineTimer) {
@@ -397,7 +517,8 @@ function renderABRollout() {
     abDecisionBox('当前阶段',s ? '#'+(Number(s.stage_index)+1)+' · '+s.canary_percent+'%' : '—','Rollout #'+(r.id||'—')),
     abDecisionBox('固定窗口截止',s ? abTime(s.observation_ends) : '—',remaining>0?'剩余 '+abDuration(remaining):'窗口已到期'),
     abDecisionBox('当前 Epoch',s ? '#'+s.epoch_id : '—',s?'开始 '+abTime(s.started):''),
-    abDecisionBox('编排状态',r.status||'—',r.ended?'结束 '+abTime(r.ended):'进行中')
+    abDecisionBox('编排状态',r.status||'—',r.ended?'结束 '+abTime(r.ended):'进行中'),
+    abDecisionBox('安全护栏',v.safety_blocked?'BLOCKED':'正常',abSafetyStateZH(v.safety_status)+(v.rollback_recommended?' · 建议回退':''))
   );
   box.append(grid);
   const actions=document.createElement('div'); actions.className='row'; actions.style.marginTop='14px';
@@ -639,6 +760,7 @@ function renderABAnalysis() {
     headline.append(abMetricCard('Epoch','#'+epoch.id,epoch.canary_percent+'% Canary'),abMetricCard('汇总状态','等待样本','采集到 minute 数据后生成对比'));
   }
   renderABReadiness(c,summary?.analysis_policy||{});
+  renderABSafety();
   renderABRollout();
   renderABDecision();
   const meta=el('abEpochMeta'); meta.replaceChildren();
@@ -660,7 +782,9 @@ async function refreshAB() {
   for (const port of abState.ports) el('abPort').add(new Option(String(port),String(port)));
   if (selected && abState.ports.map(String).includes(selected)) el('abPort').value=selected;
   if (!abState.ports.length) {
-    abState.summary=null; abState.series=null; abState.statistics=null; abState.rollout=null; el('abAnalysis').hidden=true; el('abNoData').hidden=false; return;
+    abState.summary=null; abState.series=null; abState.statistics=null; abState.rollout=null; abState.safety=null;
+    if (abSafetyRefreshTimer) { clearTimeout(abSafetyRefreshTimer); abSafetyRefreshTimer=null; }
+    el('abAnalysis').hidden=true; el('abNoData').hidden=false; return;
   }
   const port=Number(el('abPort').value), w=abWindow();
   const query='port='+port+'&from='+w.from+'&to='+w.to;
@@ -668,8 +792,10 @@ async function refreshAB() {
   const seriesResp=await api('/api/v1/ab/series?'+query+'&tier='+w.tier);
   const analysisResp=await api('/api/v1/ab/analysis?'+query);
   const rollout=await optionalJSON('/api/v1/ab/rollout?port='+port);
-  abState.summary=await summaryResp.json(); abState.series=await seriesResp.json(); abState.statistics=await analysisResp.json(); abState.rollout=rollout;
+  const safety=await optionalJSON('/api/v1/ab/safety?port='+port);
+  abState.summary=await summaryResp.json(); abState.series=await seriesResp.json(); abState.statistics=await analysisResp.json(); abState.rollout=rollout; abState.safety=safety;
   renderABAnalysis();
+  scheduleABSafetyRefresh();
 }
 async function downloadABReport(control) {
   if (!el('abPort').value) { message('没有可导出的实验端口',true); return; }
@@ -713,7 +839,7 @@ el('checkUpdate').onclick=()=>busy(el('checkUpdate'),async()=>{const x=await(awa
 el('addAB').onclick=()=>{el('abForm').reset();el('abNewGain').value='20';el('abNewPercent').value='5';el('abOrchestrate').checked=true;el('abRolloutStagesInput').value='5,10,25,50,100';el('abRolloutWindow').value='60';el('abDialog').showModal();};
 el('closeAB').onclick=()=>el('abDialog').close();
 el('abNewPercent').onchange=()=>{const p=Number(el('abNewPercent').value);if(p===0){el('abOrchestrate').checked=false;el('abRolloutStagesInput').value='';return;}const standard=[5,10,25,50,100];el('abRolloutStagesInput').value=[p,...standard.filter(x=>x>p)].filter((v,i,a)=>a.indexOf(v)===i).join(',');};
-el('abForm').onsubmit=async e=>{e.preventDefault();await busy(e.submitter,async()=>{const stages=el('abRolloutStagesInput').value.split(',').map(x=>Number(x.trim())).filter(Number.isFinite);const body={port:Number(el('abNewPort').value),rate_mbps:Number(el('abNewRate').value),gain:Number(el('abNewGain').value),canary_percent:Number(el('abNewPercent').value),analysis_plan:{alpha:Number(el('abPlanAlpha').value),power:Number(el('abPlanPower').value),expected_app_success_percent:Number(el('abPlanSuccess').value),app_success_ni_margin_pp:Number(el('abPlanNI').value),max_retrans_delta_pp:Number(el('abPlanRetrans').value),max_mean_rtt_delta_percent:Number(el('abPlanRTT').value),min_goodput_delta_percent:Number(el('abPlanGoodput').value),bootstrap_block_minutes:Number(el('abPlanBlock').value)},rollout_plan:el('abOrchestrate').checked?{stages,observation_window_seconds:Number(el('abRolloutWindow').value)*60}:undefined};await api('/api/v1/ab','POST',body);el('abDialog').close();message(el('abOrchestrate').checked?'A/B 实验已创建，统计计划与阶段窗口已固化':'A/B 实验已创建，统计计划已固化');await refreshAB();});};
+el('abForm').onsubmit=async e=>{e.preventDefault();await busy(e.submitter,async()=>{const stages=el('abRolloutStagesInput').value.split(',').map(x=>Number(x.trim())).filter(Number.isFinite);const body={port:Number(el('abNewPort').value),rate_mbps:Number(el('abNewRate').value),gain:Number(el('abNewGain').value),canary_percent:Number(el('abNewPercent').value),analysis_plan:{alpha:Number(el('abPlanAlpha').value),power:Number(el('abPlanPower').value),expected_app_success_percent:Number(el('abPlanSuccess').value),app_success_ni_margin_pp:Number(el('abPlanNI').value),max_retrans_delta_pp:Number(el('abPlanRetrans').value),max_mean_rtt_delta_percent:Number(el('abPlanRTT').value),min_goodput_delta_percent:Number(el('abPlanGoodput').value),bootstrap_block_minutes:Number(el('abPlanBlock').value)},rollout_plan:el('abOrchestrate').checked?{stages,observation_window_seconds:Number(el('abRolloutWindow').value)*60}:undefined,safety_plan:{window_seconds:Number(el('abSafeWindow').value),min_assigned_connections:Number(el('abSafeConnections').value),min_app_requests_per_cohort:Number(el('abSafeAppRequests').value),max_selector_failure_percent:Number(el('abSafeSelector').value),max_gap_samples:Number(el('abSafeGaps').value),max_retrans_delta_pp:Number(el('abSafeRetrans').value),max_mean_rtt_delta_percent:Number(el('abSafeRTT').value),max_app_error_delta_pp:Number(el('abSafeAppError').value),max_app_latency_delta_percent:Number(el('abSafeAppLatency').value)}};await api('/api/v1/ab','POST',body);el('abDialog').close();message(el('abOrchestrate').checked?'A/B 实验已创建，统计计划与阶段窗口已固化':'A/B 实验已创建，统计计划已固化');await refreshAB();});};
 el('refreshAB').onclick=()=>busy(el('refreshAB'),async()=>{await refreshAB();message('A/B 实验数据已刷新');});
 el('abPort').onchange=()=>refreshAB().catch(e=>message(e.message,true));
 el('abRange').onchange=()=>refreshAB().catch(e=>message(e.message,true));

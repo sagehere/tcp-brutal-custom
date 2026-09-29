@@ -2,6 +2,8 @@
 
 Step 6 在 Step 5 的统计分析之上增加 rollout orchestration：固定观察窗口、阶段尝试历史、暂停/恢复、回退、重试、人工批准下一档和完整审计日志。
 
+Step 7 进一步增加独立的生产安全门：它可以阻止 `advance` / `complete` 并持久化生产告警，但不会自动修改流量。详见 `AB_PRODUCTION_SAFETY.zh.md`。
+
 ## 核心原则
 
 - 系统可以自动观察和计算，但绝不自动扩流。

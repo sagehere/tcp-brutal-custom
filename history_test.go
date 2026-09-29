@@ -161,7 +161,7 @@ func TestABHistoryEpochsAndReport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]bool{"manifest.json": false, "epochs.csv": false, "cohort_samples.csv": false, "selector_samples.csv": false, "summary.csv": false, "comparison.csv": false, "statistical_analysis.json": false, "rollout_history.json": false, "analysis_plan.json": false, "analysis_rules.json": false}
+	want := map[string]bool{"manifest.json": false, "epochs.csv": false, "cohort_samples.csv": false, "selector_samples.csv": false, "summary.csv": false, "comparison.csv": false, "statistical_analysis.json": false, "rollout_history.json": false, "safety_alerts.json": false, "analysis_plan.json": false, "analysis_rules.json": false}
 	for _, zf := range zr.File {
 		if _, ok := want[zf.Name]; ok {
 			want[zf.Name] = true
@@ -189,7 +189,7 @@ func TestABHistoryEpochsAndReport(t *testing.T) {
 	}
 }
 
-func TestABSchemaV1MigratesToV3(t *testing.T) {
+func TestABSchemaV1MigratesToV4(t *testing.T) {
 	dir := t.TempDir()
 	h, err := openHistoryAt(dir)
 	if err != nil {
@@ -198,7 +198,7 @@ func TestABSchemaV1MigratesToV3(t *testing.T) {
 	if _, err = h.db.Exec("UPDATE ab_meta SET value='1' WHERE key='schema_version'"); err != nil {
 		t.Fatal(err)
 	}
-	for _, table := range []string{"ab_epoch_plans", "ab_rollouts", "ab_rollout_stages", "ab_rollout_events"} {
+	for _, table := range []string{"ab_epoch_plans", "ab_rollouts", "ab_rollout_stages", "ab_rollout_events", "ab_epoch_safety_plans", "ab_safety_alerts"} {
 		if _, err = h.db.Exec("DROP TABLE " + table); err != nil {
 			t.Fatal(err)
 		}
@@ -213,10 +213,10 @@ func TestABSchemaV1MigratesToV3(t *testing.T) {
 	if err = h.db.QueryRow("SELECT value FROM ab_meta WHERE key='schema_version'").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != "3" {
+	if version != "4" {
 		t.Fatalf("schema version=%q", version)
 	}
-	for _, table := range []string{"ab_epoch_plans", "ab_rollouts", "ab_rollout_stages", "ab_rollout_events"} {
+	for _, table := range []string{"ab_epoch_plans", "ab_rollouts", "ab_rollout_stages", "ab_rollout_events", "ab_epoch_safety_plans", "ab_safety_alerts"} {
 		if _, err = h.db.Exec("SELECT 1 FROM " + table + " LIMIT 1"); err != nil {
 			t.Fatalf("table %s missing: %v", table, err)
 		}
@@ -332,7 +332,7 @@ func TestABRolloutPlanAllowsPauseAndLaterStageConfig(t *testing.T) {
 	}
 }
 
-func TestABSchemaV2MigratesToV3PreservingAnalysisPlans(t *testing.T) {
+func TestABSchemaV2MigratesToV4PreservingAnalysisPlans(t *testing.T) {
 	dir := t.TempDir()
 	h, err := openHistoryAt(dir)
 	if err != nil {
@@ -347,7 +347,7 @@ func TestABSchemaV2MigratesToV3PreservingAnalysisPlans(t *testing.T) {
 	if _, err = h.db.Exec("UPDATE ab_meta SET value='2' WHERE key='schema_version'"); err != nil {
 		t.Fatal(err)
 	}
-	for _, table := range []string{"ab_rollouts", "ab_rollout_stages", "ab_rollout_events"} {
+	for _, table := range []string{"ab_rollouts", "ab_rollout_stages", "ab_rollout_events", "ab_epoch_safety_plans", "ab_safety_alerts"} {
 		if _, err = h.db.Exec("DROP TABLE " + table); err != nil {
 			t.Fatal(err)
 		}
@@ -363,16 +363,73 @@ func TestABSchemaV2MigratesToV3PreservingAnalysisPlans(t *testing.T) {
 	if err = h.db.QueryRow("SELECT value FROM ab_meta WHERE key='schema_version'").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != "3" {
+	if version != "4" {
 		t.Fatalf("schema version=%q", version)
 	}
 	plans, err := h.abPlans(p.Port, time.Now().Unix()-3600, time.Now().Unix()+3600)
 	if err != nil || !plans[epochID].Predeclared {
-		t.Fatalf("analysis plan lost during v2->v3 migration: %+v err=%v", plans[epochID], err)
+		t.Fatalf("analysis plan lost during v2->v4 migration: %+v err=%v", plans[epochID], err)
 	}
-	for _, table := range []string{"ab_rollouts", "ab_rollout_stages", "ab_rollout_events"} {
+	for _, table := range []string{"ab_rollouts", "ab_rollout_stages", "ab_rollout_events", "ab_epoch_safety_plans", "ab_safety_alerts"} {
 		if _, err = h.db.Exec("SELECT 1 FROM " + table + " LIMIT 1"); err != nil {
-			t.Fatalf("rollout table %s missing after migration: %v", table, err)
+			t.Fatalf("Step 6/7 table %s missing after migration: %v", table, err)
 		}
+	}
+}
+
+func TestABSchemaV3MigratesToV4PreservingRollout(t *testing.T) {
+	dir := t.TempDir()
+	h, err := openHistoryAt(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	analysis := defaultABExperimentPlan()
+	safety := defaultABSafetyPlan()
+	rolloutPlan := &abRolloutPlan{Stages: abRolloutStages{5, 10}, ObservationWindowSeconds: 600}
+	p := abPortConfig{Port: 7543, RateMbps: 100, Gain: 20, CanaryPercent: 5, Enabled: true, AnalysisPlan: &analysis, SafetyPlan: &safety, RolloutPlan: rolloutPlan}
+	epochID, err := h.beginABEpoch(p, "v3_migration_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rollout, err := h.beginABRollout(p, epochID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.db.Exec("UPDATE ab_meta SET value='3' WHERE key='schema_version'"); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"ab_epoch_safety_plans", "ab_safety_alerts"} {
+		if _, err = h.db.Exec("DROP TABLE " + table); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.close()
+
+	h, err = openHistoryAt(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.close()
+	var version string
+	if err = h.db.QueryRow("SELECT value FROM ab_meta WHERE key='schema_version'").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != "4" {
+		t.Fatalf("schema version=%q", version)
+	}
+	got, err := h.abRolloutByID(rollout.ID)
+	if err != nil || got.Status != "active" || got.CurrentEpochID != epochID || len(got.Stages) != 2 || got.Stages[0] != 5 {
+		t.Fatalf("rollout lost during v3->v4 migration: %+v err=%v", got, err)
+	}
+	stages, err := h.abRolloutStages(rollout.ID)
+	if err != nil || len(stages) != 1 || stages[0].EpochID != epochID {
+		t.Fatalf("stage history lost during v3->v4 migration: %+v err=%v", stages, err)
+	}
+	var safetyRows int
+	if err = h.db.QueryRow("SELECT count(*) FROM ab_epoch_safety_plans").Scan(&safetyRows); err != nil {
+		t.Fatal(err)
+	}
+	if safetyRows != 0 {
+		t.Fatalf("legacy v3 epochs received fabricated safety plans: %d", safetyRows)
 	}
 }

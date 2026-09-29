@@ -161,6 +161,20 @@ func (h *history) initAB() error {
 			action TEXT NOT NULL, from_percent INTEGER NOT NULL, to_percent INTEGER NOT NULL, epoch_id INTEGER, detail TEXT
 		)`,
 		`CREATE INDEX IF NOT EXISTS ab_rollout_events_rollout ON ab_rollout_events(rollout_id,id)`,
+		`CREATE TABLE IF NOT EXISTS ab_epoch_safety_plans (
+			epoch_id INTEGER PRIMARY KEY,
+			window_seconds INTEGER NOT NULL, min_assigned_connections INTEGER NOT NULL, min_app_requests_per_cohort INTEGER NOT NULL,
+			max_selector_failure_percent REAL NOT NULL, max_gap_samples INTEGER NOT NULL, max_retrans_delta_pp REAL NOT NULL,
+			max_mean_rtt_delta_percent REAL NOT NULL, max_app_error_delta_pp REAL NOT NULL, max_app_latency_delta_percent REAL NOT NULL,
+			predeclared INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS ab_safety_alerts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, port INTEGER NOT NULL, epoch_id INTEGER NOT NULL, rollout_id INTEGER,
+			first_seen_ts INTEGER NOT NULL, last_seen_ts INTEGER NOT NULL, cleared_ts INTEGER,
+			severity TEXT NOT NULL, code TEXT NOT NULL, message TEXT NOT NULL, detail_json TEXT, active INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS ab_safety_alerts_port_time ON ab_safety_alerts(port,first_seen_ts)`,
+		`CREATE INDEX IF NOT EXISTS ab_safety_alerts_active ON ab_safety_alerts(port,active,code)`,
 	} {
 		if _, err := h.db.Exec(q); err != nil {
 			return err
@@ -171,11 +185,11 @@ func (h *history) initAB() error {
 		return err
 	}
 	switch schemaVersion {
-	case "1", "2":
-		if _, err := h.db.Exec("UPDATE ab_meta SET value='3' WHERE key='schema_version'"); err != nil {
+	case "1", "2", "3":
+		if _, err := h.db.Exec("UPDATE ab_meta SET value='4' WHERE key='schema_version'"); err != nil {
 			return err
 		}
-	case "3":
+	case "4":
 	default:
 		return fmt.Errorf("unsupported A/B schema version %q", schemaVersion)
 	}
@@ -249,6 +263,8 @@ func (h *history) ensureABEpoch(p abPortConfig, reason string) (int64, error) {
 func (h *history) beginABEpoch(p abPortConfig, reason string) (int64, error) {
 	plan, err := effectiveABExperimentPlan(p.AnalysisPlan)
 	if err != nil { return 0, err }
+	safety, err := effectiveABSafetyPlan(p.SafetyPlan)
+	if err != nil { return 0, err }
 	now := time.Now().Unix()
 	tx, err := h.db.Begin()
 	if err != nil {
@@ -269,6 +285,8 @@ func (h *history) beginABEpoch(p abPortConfig, reason string) (int64, error) {
 	}
 	if _, err = tx.Exec(`INSERT INTO ab_epoch_plans(epoch_id,alpha,power,expected_app_success_percent,app_success_ni_margin_pp,max_retrans_delta_pp,max_mean_rtt_delta_percent,min_goodput_delta_percent,bootstrap_block_minutes,predeclared)
 		VALUES(?,?,?,?,?,?,?,?,?,1)`, id, plan.Alpha, plan.Power, plan.ExpectedAppSuccessPercent, plan.AppSuccessNIMarginPP, plan.MaxRetransDeltaPP, plan.MaxMeanRTTDeltaPercent, plan.MinGoodputDeltaPercent, plan.BootstrapBlockMinutes); err != nil { return 0, err }
+	if _, err = tx.Exec(`INSERT INTO ab_epoch_safety_plans(epoch_id,window_seconds,min_assigned_connections,min_app_requests_per_cohort,max_selector_failure_percent,max_gap_samples,max_retrans_delta_pp,max_mean_rtt_delta_percent,max_app_error_delta_pp,max_app_latency_delta_percent,predeclared)
+		VALUES(?,?,?,?,?,?,?,?,?,?,1)`, id, safety.WindowSeconds, safety.MinAssignedConnections, safety.MinAppRequestsPerCohort, safety.MaxSelectorFailurePercent, safety.MaxGapSamples, safety.MaxRetransDeltaPP, safety.MaxMeanRTTDeltaPercent, safety.MaxAppErrorDeltaPP, safety.MaxAppLatencyDeltaPercent); err != nil { return 0, err }
 	if err = tx.Commit(); err != nil {
 		return 0, err
 	}

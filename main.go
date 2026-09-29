@@ -53,6 +53,7 @@ type abPortConfig struct {
 	Enabled       bool              `json:"enabled"`
 	AnalysisPlan  *abExperimentPlan `json:"analysis_plan,omitempty"`
 	RolloutPlan   *abRolloutPlan    `json:"rollout_plan,omitempty"`
+	SafetyPlan    *abSafetyPlan     `json:"safety_plan,omitempty"`
 }
 
 type config struct {
@@ -90,6 +91,11 @@ func loadConfig() (config, error) {
 			return c, fmt.Errorf("invalid A/B rollout plan for port %d: %w", c.ABPorts[i].Port, e)
 		}
 		c.ABPorts[i].RolloutPlan = rollout
+		safety, e := effectiveABSafetyPlan(c.ABPorts[i].SafetyPlan)
+		if e != nil {
+			return c, fmt.Errorf("invalid A/B safety plan for port %d: %w", c.ABPorts[i].Port, e)
+		}
+		c.ABPorts[i].SafetyPlan = &safety
 	}
 	return c, nil
 }
@@ -494,6 +500,13 @@ func runCLI(args []string) error {
 			}
 			return errors.New("usage: tbc2-canary ab rollout PORT [pause|resume|rollback|retry|advance|complete]")
 		}
+		if len(args) == 3 && args[1] == "safety" {
+			port, e := strconv.ParseUint(args[2], 10, 16)
+			if e != nil || port == 0 {
+				return errors.New("invalid port")
+			}
+			return localRequest("GET", fmt.Sprintf("/api/v1/ab/safety?port=%d", port), nil)
+		}
 		if len(args) >= 3 && args[1] == "analysis" {
 			port, e := strconv.ParseUint(args[2], 10, 16)
 			if e != nil || port == 0 {
@@ -583,6 +596,7 @@ func runCLI(args []string) error {
 			}
 			gain := uint32(20)
 			plan := defaultABExperimentPlan()
+			safety := defaultABSafetyPlan()
 			rollout := defaultABRolloutPlan(uint8(percent))
 			for _, opt := range args[5:] {
 				parts := strings.SplitN(opt, "=", 2)
@@ -614,6 +628,24 @@ func runCLI(args []string) error {
 					plan.Alpha, e = strconv.ParseFloat(parts[1], 64)
 				case "power":
 					plan.Power, e = strconv.ParseFloat(parts[1], 64)
+				case "safe-window":
+					safety.WindowSeconds, e = strconv.ParseUint(parts[1], 10, 64)
+				case "safe-connections":
+					safety.MinAssignedConnections, e = strconv.ParseUint(parts[1], 10, 64)
+				case "safe-app":
+					safety.MinAppRequestsPerCohort, e = strconv.ParseUint(parts[1], 10, 64)
+				case "safe-selector":
+					safety.MaxSelectorFailurePercent, e = strconv.ParseFloat(parts[1], 64)
+				case "safe-gaps":
+					safety.MaxGapSamples, e = strconv.ParseUint(parts[1], 10, 64)
+				case "safe-retrans":
+					safety.MaxRetransDeltaPP, e = strconv.ParseFloat(parts[1], 64)
+				case "safe-rtt":
+					safety.MaxMeanRTTDeltaPercent, e = strconv.ParseFloat(parts[1], 64)
+				case "safe-app-error":
+					safety.MaxAppErrorDeltaPP, e = strconv.ParseFloat(parts[1], 64)
+				case "safe-app-latency":
+					safety.MaxAppLatencyDeltaPercent, e = strconv.ParseFloat(parts[1], 64)
 				case "stages":
 					if rollout == nil {
 						rollout = &abRolloutPlan{ObservationWindowSeconds: 3600}
@@ -647,6 +679,9 @@ func runCLI(args []string) error {
 			if _, e = effectiveABExperimentPlan(&plan); e != nil {
 				return e
 			}
+			if _, e = effectiveABSafetyPlan(&safety); e != nil {
+				return e
+			}
 			if rollout != nil {
 				rollout, e = effectiveABRolloutPlan(rollout, uint8(percent))
 				if e != nil {
@@ -656,7 +691,7 @@ func runCLI(args []string) error {
 					return errors.New("first rollout stage must equal initial canary percentage")
 				}
 			}
-			b, _ := json.Marshal(abPortConfig{Port: uint16(port), RateMbps: rate, Gain: gain, CanaryPercent: uint8(percent), Enabled: true, AnalysisPlan: &plan, RolloutPlan: rollout})
+			b, _ := json.Marshal(abPortConfig{Port: uint16(port), RateMbps: rate, Gain: gain, CanaryPercent: uint8(percent), Enabled: true, AnalysisPlan: &plan, RolloutPlan: rollout, SafetyPlan: &safety})
 			return localRequest("POST", "/api/v1/ab", strings.NewReader(string(b)))
 		}
 	case "password":
@@ -703,7 +738,7 @@ func runCLI(args []string) error {
 			return localRequest("PUT", "/api/v1/autostart", strings.NewReader(string(b)))
 		}
 	}
-	return errors.New("usage: tbc2-canary [status|ports|port add ...|ab list|ab add PORT Mbps PERCENT [gain=N success=PCT ni=PP retrans=PP rtt=PCT goodput=PCT block=MIN alpha=A power=P stages=5,10,25,50,100 window=SECONDS orchestrate=on|off]|ab rollout PORT [pause|resume|rollback|retry|advance|complete]|ab set PORT PERCENT|ab del PORT|ab summary PORT [FROM TO]|ab analysis PORT [FROM TO]|ab export PORT FILE [FROM TO]|password ...]")
+	return errors.New("usage: tbc2-canary [status|ports|port add ...|ab list|ab add PORT Mbps PERCENT [gain=N success=PCT ni=PP retrans=PP rtt=PCT goodput=PCT block=MIN alpha=A power=P stages=5,10,25,50,100 window=SECONDS orchestrate=on|off safe-window=SEC safe-connections=N safe-app=N safe-selector=PCT safe-gaps=N safe-retrans=PP safe-rtt=PCT safe-app-error=PP safe-app-latency=PCT]|ab rollout PORT [pause|resume|rollback|retry|advance|complete]|ab safety PORT|ab set PORT PERCENT|ab del PORT|ab summary PORT [FROM TO]|ab analysis PORT [FROM TO]|ab export PORT FILE [FROM TO]|password ...]")
 }
 
 func panelManagementMenu() error {

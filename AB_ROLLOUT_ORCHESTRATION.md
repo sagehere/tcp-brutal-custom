@@ -2,6 +2,8 @@
 
 Step 6 adds a persisted rollout lifecycle on top of Step 5 statistical review.
 
+Step 7 adds a separate production safety gate that can block `advance` / `complete` and persist operational alerts without automatically changing traffic. See `AB_PRODUCTION_SAFETY.md`.
+
 ## Principles
 
 - Observation and evaluation may be automatic; traffic expansion is never automatic.

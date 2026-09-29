@@ -139,14 +139,17 @@ type abRolloutEvent struct {
 }
 
 type abRolloutView struct {
-	Rollout          abRollout        `json:"rollout"`
-	CurrentStage     *abRolloutStage  `json:"current_stage,omitempty"`
-	StageHistory     []abRolloutStage `json:"stage_history"`
-	Events           []abRolloutEvent `json:"events"`
-	WindowState      string           `json:"window_state"`
-	SecondsRemaining int64            `json:"seconds_remaining"`
-	Evaluation       *abEpochAnalysis `json:"evaluation,omitempty"`
-	AllowedActions   []string         `json:"allowed_actions,omitempty"`
+	Rollout             abRollout        `json:"rollout"`
+	CurrentStage        *abRolloutStage  `json:"current_stage,omitempty"`
+	StageHistory        []abRolloutStage `json:"stage_history"`
+	Events              []abRolloutEvent `json:"events"`
+	WindowState         string           `json:"window_state"`
+	SecondsRemaining    int64            `json:"seconds_remaining"`
+	Evaluation          *abEpochAnalysis `json:"evaluation,omitempty"`
+	AllowedActions      []string         `json:"allowed_actions,omitempty"`
+	SafetyStatus        string           `json:"safety_status,omitempty"`
+	SafetyBlocked       bool             `json:"safety_blocked,omitempty"`
+	RollbackRecommended bool             `json:"rollback_recommended,omitempty"`
 }
 
 func (h *history) beginABRollout(p abPortConfig, epochID int64) (*abRollout, error) {
@@ -416,6 +419,45 @@ func (m *manager) evaluateRolloutStage(port uint16, stage *abRolloutStage) (*abE
 	return nil, nil
 }
 
+func (m *manager) finalizeRolloutView(port uint16, view *abRolloutView) (*abRolloutView, error) {
+	if view == nil {
+		return nil, nil
+	}
+	safety, err := m.safetyView(port)
+	if err != nil || safety == nil {
+		if view.WindowState == "eligible_review" || view.WindowState == "completion_review" {
+			view.SafetyStatus = "unavailable"
+			view.SafetyBlocked = true
+			filtered := view.AllowedActions[:0]
+			for _, action := range view.AllowedActions {
+				if action != "advance" && action != "complete" {
+					filtered = append(filtered, action)
+				}
+			}
+			view.AllowedActions = filtered
+		}
+		return view, nil
+	}
+	view.SafetyStatus = safety.Evaluation.Status
+	view.SafetyBlocked = safety.Evaluation.HardBlock
+	view.RollbackRecommended = safety.Evaluation.RollbackRecommended
+	if !view.SafetyBlocked {
+		return view, nil
+	}
+	filtered := make([]string, 0, len(view.AllowedActions))
+	for _, action := range view.AllowedActions {
+		if action == "advance" || action == "complete" {
+			continue
+		}
+		if view.RollbackRecommended && action == "retry" {
+			continue
+		}
+		filtered = append(filtered, action)
+	}
+	view.AllowedActions = filtered
+	return view, nil
+}
+
 func (m *manager) rolloutView(port uint16) (*abRolloutView, error) {
 	r, err := m.history.latestABRollout(port)
 	if err != nil || r == nil {
@@ -438,28 +480,28 @@ func (m *manager) rolloutView(port uint16) (*abRolloutView, error) {
 	case "paused":
 		view.WindowState = "paused"
 		view.AllowedActions = []string{"resume", "rollback"}
-		return view, nil
+		return m.finalizeRolloutView(port, view)
 	case "rolled_back", "completed", "stopped", "superseded", "desynced":
 		view.WindowState = r.Status
-		return view, nil
+		return m.finalizeRolloutView(port, view)
 	}
 	if stage == nil {
 		view.WindowState = "desynced"
-		return view, nil
+		return m.finalizeRolloutView(port, view)
 	}
 	now := time.Now().Unix()
 	view.SecondsRemaining = stage.ObservationEnds - now
 	if view.SecondsRemaining > 0 {
 		view.WindowState = "observing"
 		view.AllowedActions = []string{"pause", "rollback"}
-		return view, nil
+		return m.finalizeRolloutView(port, view)
 	}
 	view.SecondsRemaining = 0
 	last := r.CurrentStageIndex == len(r.Stages)-1
 	if stage.CanaryPercent == 100 && last {
 		view.WindowState = "completion_review"
 		view.AllowedActions = []string{"complete", "rollback", "retry"}
-		return view, nil
+		return m.finalizeRolloutView(port, view)
 	}
 	evaluation, err := m.evaluateRolloutStage(port, stage)
 	if err != nil {
@@ -469,7 +511,7 @@ func (m *manager) rolloutView(port uint16) (*abRolloutView, error) {
 	if evaluation == nil {
 		view.WindowState = "insufficient_review"
 		view.AllowedActions = []string{"retry", "pause", "rollback"}
-		return view, nil
+		return m.finalizeRolloutView(port, view)
 	}
 	switch evaluation.State {
 	case "eligible_review":
@@ -490,7 +532,7 @@ func (m *manager) rolloutView(port uint16) (*abRolloutView, error) {
 		view.WindowState = "insufficient_review"
 		view.AllowedActions = []string{"retry", "pause", "rollback"}
 	}
-	return view, nil
+	return m.finalizeRolloutView(port, view)
 }
 
 func (m *manager) abRolloutAPI(w http.ResponseWriter, r *http.Request) {
