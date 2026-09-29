@@ -137,6 +137,13 @@ func (h *history) initAB() error {
 			PRIMARY KEY(tier,ts,epoch_id,cohort,source)
 		)`,
 		`CREATE INDEX IF NOT EXISTS ab_app_query ON ab_app_samples(tier,port,ts,epoch_id,cohort)`,
+		`CREATE TABLE IF NOT EXISTS ab_epoch_plans (
+			epoch_id INTEGER PRIMARY KEY,
+			alpha REAL NOT NULL, power REAL NOT NULL, expected_app_success_percent REAL NOT NULL,
+			app_success_ni_margin_pp REAL NOT NULL, max_retrans_delta_pp REAL NOT NULL,
+			max_mean_rtt_delta_percent REAL NOT NULL, min_goodput_delta_percent REAL NOT NULL,
+			bootstrap_block_minutes INTEGER NOT NULL, predeclared INTEGER NOT NULL
+		)`,
 	} {
 		if _, err := h.db.Exec(q); err != nil {
 			return err
@@ -146,7 +153,13 @@ func (h *history) initAB() error {
 	if err := h.db.QueryRow("SELECT value FROM ab_meta WHERE key='schema_version'").Scan(&schemaVersion); err != nil {
 		return err
 	}
-	if schemaVersion != "1" {
+	switch schemaVersion {
+	case "1":
+		if _, err := h.db.Exec("UPDATE ab_meta SET value='2' WHERE key='schema_version'"); err != nil {
+			return err
+		}
+	case "2":
+	default:
 		return fmt.Errorf("unsupported A/B schema version %q", schemaVersion)
 	}
 	if h.abLast == nil {
@@ -217,6 +230,8 @@ func (h *history) ensureABEpoch(p abPortConfig, reason string) (int64, error) {
 }
 
 func (h *history) beginABEpoch(p abPortConfig, reason string) (int64, error) {
+	plan, err := effectiveABExperimentPlan(p.AnalysisPlan)
+	if err != nil { return 0, err }
 	now := time.Now().Unix()
 	tx, err := h.db.Begin()
 	if err != nil {
@@ -235,6 +250,8 @@ func (h *history) beginABEpoch(p abPortConfig, reason string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	if _, err = tx.Exec(`INSERT INTO ab_epoch_plans(epoch_id,alpha,power,expected_app_success_percent,app_success_ni_margin_pp,max_retrans_delta_pp,max_mean_rtt_delta_percent,min_goodput_delta_percent,bootstrap_block_minutes,predeclared)
+		VALUES(?,?,?,?,?,?,?,?,?,1)`, id, plan.Alpha, plan.Power, plan.ExpectedAppSuccessPercent, plan.AppSuccessNIMarginPP, plan.MaxRetransDeltaPP, plan.MaxMeanRTTDeltaPercent, plan.MinGoodputDeltaPercent, plan.BootstrapBlockMinutes); err != nil { return 0, err }
 	if err = tx.Commit(); err != nil {
 		return 0, err
 	}
@@ -390,6 +407,16 @@ func (h *history) recordABApp(x abAppSample) error {
 		if err != nil { return err }
 	}
 	return tx.Commit()
+}
+
+func (h *history) abPlans(port uint16, from, to int64) (map[int64]abStoredPlan, error) {
+	rows, err := h.db.Query(`SELECT p.epoch_id,p.alpha,p.power,p.expected_app_success_percent,p.app_success_ni_margin_pp,p.max_retrans_delta_pp,p.max_mean_rtt_delta_percent,p.min_goodput_delta_percent,p.bootstrap_block_minutes,p.predeclared
+		FROM ab_epoch_plans p JOIN ab_epochs e ON e.id=p.epoch_id
+		WHERE e.port=? AND e.started_ts<? AND COALESCE(e.ended_ts,?)>=?`,port,to,to,from)
+	if err != nil { return nil, err }
+	defer rows.Close(); out:=map[int64]abStoredPlan{}
+	for rows.Next(){var id int64;var p abExperimentPlan;var pre int;if err:=rows.Scan(&id,&p.Alpha,&p.Power,&p.ExpectedAppSuccessPercent,&p.AppSuccessNIMarginPP,&p.MaxRetransDeltaPP,&p.MaxMeanRTTDeltaPercent,&p.MinGoodputDeltaPercent,&p.BootstrapBlockMinutes,&pre);err!=nil{return nil,err};out[id]=abStoredPlan{Plan:p,Predeclared:pre!=0}}
+	return out,rows.Err()
 }
 
 func (h *history) abPorts() ([]uint16, error) {
