@@ -161,6 +161,7 @@ if [[ ! -f "$config" ]]; then
   "$binary" init "${TCP_BRUTAL_CANARY_WEB_PORT:-23334}"
 fi
 systemctl enable tcp-brutal-canary-manager.service tcp-brutal-canary-web.service
+systemctl reset-failed tcp-brutal-canary-manager.service tcp-brutal-canary-web.service 2>/dev/null || true
 systemctl restart tcp-brutal-canary-manager.service tcp-brutal-canary-web.service
 
 echo "TCP Brutal Canary installed alongside baseline. Version: $version"
