@@ -30,6 +30,9 @@ func TestManagerRoutesRegisterWithoutConflict(t *testing.T) {
 	if !strings.Contains(root.Body.String(), "abDecision") || !strings.Contains(root.Body.String(), "abPlanNI") {
 		t.Fatal("A/B statistical review controls missing")
 	}
+	if !strings.Contains(root.Body.String(), "abRollout") || !strings.Contains(root.Body.String(), "abRolloutStagesInput") || !strings.Contains(root.Body.String(), "abRolloutEvents") {
+		t.Fatal("A/B rollout orchestration controls missing")
+	}
 
 	api := httptest.NewRecorder()
 	h.ServeHTTP(api, httptest.NewRequest(http.MethodGet, "/api/v1/status", nil))
