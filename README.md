@@ -11,6 +11,7 @@
 <p align="center">
   <a href="README.zh.md">中文文档</a> ·
   <a href="CUSTOM.zh.md">Detailed custom guide</a> ·
+  <a href="CANARY_FINAL_DELIVERY.md">Adaptive Canary delivery</a> ·
   <a href="https://github.com/HyNetworks/tcp-brutal">Upstream TCP Brutal</a>
 </p>
 
