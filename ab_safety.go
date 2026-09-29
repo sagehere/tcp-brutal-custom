@@ -150,15 +150,18 @@ func (m *manager) evaluateABSafety(cfg abPortConfig, epochID, now int64) (abSafe
 		out.From = epochStarted
 	}
 
-	samples, err := m.history.abSamples("raw", cfg.Port, out.From, now+1)
+	// Raw samples are stored in 10-second buckets. Query the bucket that overlaps
+	// the exact window/epoch boundary, then keep the epoch filter below.
+	bucketFrom := out.From - out.From%10
+	samples, err := m.history.abSamples("raw", cfg.Port, bucketFrom, now+1)
 	if err != nil {
 		return out, err
 	}
-	selectors, err := m.history.abSelectorSamples("raw", cfg.Port, out.From, now+1)
+	selectors, err := m.history.abSelectorSamples("raw", cfg.Port, bucketFrom, now+1)
 	if err != nil {
 		return out, err
 	}
-	app, err := m.history.abAppSamples("raw", cfg.Port, out.From, now+1)
+	app, err := m.history.abAppSamples("raw", cfg.Port, bucketFrom, now+1)
 	if err != nil {
 		return out, err
 	}
