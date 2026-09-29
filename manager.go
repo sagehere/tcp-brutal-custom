@@ -998,3 +998,447 @@ func (m *manager) changeAB(w http.ResponseWriter, r *http.Request) {
 	next := m.cfg
 	next.ABPorts = append([]abPortConfig(nil), m.cfg.ABPorts...)
 	next.ABPorts[idx].CanaryPercent = in.CanaryPercent
+	if err = m.applyABPort(next.ABPorts[idx]); err != nil {
+		bad(w, 500, err)
+		return
+	}
+	if err = saveConfig(next); err != nil {
+		_ = m.applyABPort(previous)
+		bad(w, 500, err)
+		return
+	}
+	m.cfg = next
+	if _, err := m.history.beginABEpoch(next.ABPorts[idx], "percentage_change"); err != nil {
+		log.Printf("A/B epoch change %d: %v", port, err)
+	} else if err := m.seedABNow(next.ABPorts[idx]); err != nil {
+		log.Printf("A/B epoch seed %d: %v", port, err)
+	}
+	m.history.addEvent("ab_percent", map[string]any{"port": port, "before": previous.CanaryPercent, "after": in.CanaryPercent})
+	jsonReply(w, 200, next.ABPorts[idx])
+}
+
+func abRange(r *http.Request) (uint16, int64, int64, error) {
+	q := r.URL.Query()
+	pv, err := strconv.ParseUint(q.Get("port"), 10, 16)
+	if err != nil || pv == 0 {
+		return 0, 0, 0, errors.New("valid port is required")
+	}
+	to, _ := strconv.ParseInt(q.Get("to"), 10, 64)
+	if to == 0 {
+		to = time.Now().Unix()
+	}
+	from, _ := strconv.ParseInt(q.Get("from"), 10, 64)
+	if from == 0 {
+		from = to - 24*3600
+	}
+	if from >= to || to-from > 366*86400 {
+		return 0, 0, 0, errors.New("invalid time range")
+	}
+	return uint16(pv), from, to, nil
+}
+
+func (m *manager) abPortsAPI(w http.ResponseWriter, r *http.Request) {
+	ports, err := m.history.abPorts()
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	jsonReply(w, 200, map[string]any{"ports": ports})
+}
+
+func (m *manager) abSummaryAPI(w http.ResponseWriter, r *http.Request) {
+	port, from, to, err := abRange(r)
+	if err != nil {
+		bad(w, 400, err)
+		return
+	}
+	rows, err := m.history.abSummaries(port, from, to)
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	epochs, err := m.history.abEpochs(port, from, to)
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	policy := defaultABAnalysisPolicy()
+	comparisons := buildABComparisons(rows, policy)
+	jsonReply(w, 200, map[string]any{"port": port, "from": from, "to": to, "epochs": epochs, "summaries": rows, "analysis_policy": policy, "comparisons": comparisons})
+}
+
+func (m *manager) abAnalysisAPI(w http.ResponseWriter, r *http.Request) {
+	port, from, to, err := abRange(r)
+	if err != nil {
+		bad(w, 400, err)
+		return
+	}
+	summaries, err := m.history.abSummaries(port, from, to)
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	epochs, err := m.history.abEpochs(port, from, to)
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	samples, err := m.history.abSamples("minute", port, from, to)
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	plans, err := m.history.abPlans(port, from, to)
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	policy := defaultABAnalysisPolicy()
+	comparisons := buildABComparisons(summaries, policy)
+	analyses := buildABEpochAnalyses(epochs, summaries, comparisons, samples, plans)
+	jsonReply(w, 200, map[string]any{
+		"port": port, "from": from, "to": to,
+		"analysis_policy": policy, "analyses": analyses,
+	})
+}
+
+func (m *manager) abSafetyAPI(w http.ResponseWriter, r *http.Request) {
+	pv, err := strconv.ParseUint(r.URL.Query().Get("port"), 10, 16)
+	if err != nil || pv == 0 {
+		bad(w, 400, errors.New("valid port is required"))
+		return
+	}
+	view, err := m.safetyView(uint16(pv))
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	if view == nil {
+		bad(w, 404, errors.New("active safety view not found"))
+		return
+	}
+	jsonReply(w, 200, view)
+}
+
+func (m *manager) abSeriesAPI(w http.ResponseWriter, r *http.Request) {
+	port, from, to, err := abRange(r)
+	if err != nil {
+		bad(w, 400, err)
+		return
+	}
+	tier := r.URL.Query().Get("tier")
+	if tier == "" {
+		tier = "minute"
+	}
+	samples, err := m.history.abSamples(tier, port, from, to)
+	if err != nil {
+		bad(w, 400, err)
+		return
+	}
+	selectors, err := m.history.abSelectorSamples(tier, port, from, to)
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	app, err := m.history.abAppSamples(tier, port, from, to)
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	jsonReply(w, 200, map[string]any{
+		"port": port, "from": from, "to": to, "tier": tier,
+		"samples": samples, "selectors": selectors, "app_samples": app,
+	})
+}
+
+func (m *manager) abReportAPI(w http.ResponseWriter, r *http.Request) {
+	port, from, to, err := abRange(r)
+	if err != nil {
+		bad(w, 400, err)
+		return
+	}
+	tier := r.URL.Query().Get("tier")
+	if tier == "" {
+		tier = "minute"
+	}
+	data, err := buildABReport(m.history, port, from, to, tier)
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	name := fmt.Sprintf("brutal-ab-port-%d-%d-%d.zip", port, from, to)
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", name))
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+func (m *manager) abAppMetricsAPI(w http.ResponseWriter, r *http.Request) {
+	var x abAppSample
+	if err := decode(r, &x); err != nil {
+		bad(w, 400, err)
+		return
+	}
+	if x.Port == 0 || (x.Cohort != "baseline" && x.Cohort != "canary") {
+		bad(w, 400, errors.New("port and cohort are required"))
+		return
+	}
+	if x.Requests != x.Success+x.Errors {
+		bad(w, 400, errors.New("requests must equal success + errors"))
+		return
+	}
+	if x.LatencySamples > x.Requests {
+		bad(w, 400, errors.New("latency_samples cannot exceed requests"))
+		return
+	}
+	if err := m.history.recordABApp(x); err != nil {
+		bad(w, 500, err)
+		return
+	}
+	jsonReply(w, 200, map[string]any{"stored": true, "port": x.Port, "cohort": x.Cohort, "source": x.Source})
+}
+
+func (m *manager) metrics(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	tier := q.Get("tier")
+	if tier == "" {
+		tier = "minute"
+	}
+	from, _ := strconv.ParseInt(q.Get("from"), 10, 64)
+	to, _ := strconv.ParseInt(q.Get("to"), 10, 64)
+	if to == 0 {
+		to = time.Now().Unix()
+	}
+	if from == 0 {
+		from = to - 24*3600
+	}
+	pv, _ := strconv.ParseUint(q.Get("port"), 10, 16)
+	rows, err := m.history.query(tier, from, to, uint16(pv))
+	if err != nil {
+		bad(w, 400, err)
+		return
+	}
+	events, err := m.history.events(from, to)
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	if q.Get("format") == "csv" {
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		w.Header().Set("Content-Disposition", "attachment; filename=brutal-canary-history.csv")
+		csvw := csv.NewWriter(w)
+		csvw.Write([]string{"time_unix", "port", "group", "sent_bytes", "acked_bytes", "retrans_bytes", "retrans_percent", "success", "failure", "members", "rtt_mean_us", "rtt_max_us", "gap", "event", "expected_bytes", "actual_bytes"})
+		for _, x := range rows {
+			retrans := ""
+			if x.Sent > 0 {
+				retrans = fmt.Sprintf("%.4f", 100*float64(x.Retrans)/float64(x.Sent))
+			}
+			mean := ""
+			if x.RTTSamples > 0 {
+				mean = fmt.Sprintf("%d", x.RTTSum/x.RTTSamples)
+			}
+			csvw.Write([]string{strconv.FormatInt(x.Time, 10), strconv.Itoa(int(x.Port)), strconv.FormatUint(x.Group, 10), strconv.FormatUint(x.Sent, 10), strconv.FormatUint(x.Acked, 10), strconv.FormatUint(x.Retrans, 10), retrans, strconv.FormatUint(x.Success, 10), strconv.FormatUint(x.Failure, 10), strconv.Itoa(int(x.Members)), mean, strconv.Itoa(int(x.RTTMax)), strconv.FormatBool(x.Gap), "", strconv.FormatUint(x.Expected, 10), strconv.FormatUint(x.Actual, 10)})
+		}
+		for _, x := range events {
+			csvw.Write([]string{strconv.FormatInt(x.Time, 10), "", "", "", "", "", "", "", "", "", "", "", "", "", x.Kind + ":" + x.Detail, "", ""})
+		}
+		csvw.Flush()
+		return
+	}
+	jsonReply(w, 200, map[string]any{"tier": tier, "samples": rows, "events": events})
+}
+
+func (m *manager) changePassword(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Password string `json:"password"`
+	}
+	if err := decode(r, &in); err != nil {
+		bad(w, 400, err)
+		return
+	}
+	m.mu.Lock()
+	next := m.cfg
+	if err := persistPassword(&next, in.Password); err != nil {
+		m.mu.Unlock()
+		bad(w, 400, err)
+		return
+	}
+	m.cfg = next
+	m.sessions = map[string]session{}
+	m.attempts = map[string]attempt{}
+	m.mu.Unlock()
+	m.history.addEvent("password_change", map[string]bool{"changed": true})
+	jsonReply(w, 200, map[string]bool{"changed": true})
+}
+
+func (m *manager) resetPassword(w http.ResponseWriter, r *http.Request) {
+	password, err := randomToken(18)
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	m.mu.Lock()
+	next := m.cfg
+	if err = persistPassword(&next, password); err != nil {
+		m.mu.Unlock()
+		bad(w, 500, err)
+		return
+	}
+	m.cfg = next
+	m.sessions = map[string]session{}
+	m.attempts = map[string]attempt{}
+	m.mu.Unlock()
+	m.history.addEvent("password_reset", map[string]bool{"reset": true})
+	jsonReply(w, 200, map[string]string{"password": password})
+}
+
+func (m *manager) settings(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Host       string   `json:"host"`
+		Port       uint16   `json:"port"`
+		AllowedIPs []string `json:"allowed_ips"`
+	}
+	if err := decode(r, &in); err != nil {
+		bad(w, 400, err)
+		return
+	}
+	if net.ParseIP(in.Host) == nil || in.Port < 1024 {
+		bad(w, 400, errors.New("invalid listener"))
+		return
+	}
+	for _, ip := range in.AllowedIPs {
+		if net.ParseIP(ip) == nil {
+			bad(w, 400, errors.New("invalid allowed IP"))
+			return
+		}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if in.Port != m.cfg.WebPort {
+		listener, err := net.Listen("tcp", net.JoinHostPort(in.Host, strconv.Itoa(int(in.Port))))
+		if err != nil {
+			bad(w, 409, fmt.Errorf("panel port unavailable: %w", err))
+			return
+		}
+		listener.Close()
+	}
+	for _, p := range m.cfg.Ports {
+		if p.Enabled && p.Port == in.Port {
+			bad(w, 400, errors.New("panel port is managed"))
+			return
+		}
+	}
+	next := m.cfg
+	next.WebHost = in.Host
+	next.WebPort = in.Port
+	next.AllowedIPs = in.AllowedIPs
+	group, err := user.LookupGroup("tcpbrutal")
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	gid, err := strconv.Atoi(group.Gid)
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	if err = saveConfig(next); err != nil {
+		bad(w, 500, err)
+		return
+	}
+	if err = writePublicWebConfig(next, gid); err != nil {
+		saveConfig(m.cfg)
+		bad(w, 500, err)
+		return
+	}
+	m.cfg = next
+	m.history.addEvent("panel_settings", map[string]any{"host": in.Host, "port": in.Port, "allowed_ips": in.AllowedIPs})
+	jsonReply(w, 200, map[string]any{"saved": true, "restart_required": true})
+}
+
+func (m *manager) autostart(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		State string `json:"state"`
+	}
+	if err := decode(r, &in); err != nil {
+		bad(w, 400, err)
+		return
+	}
+	verb := "enable"
+	if in.State == "off" {
+		verb = "disable"
+	} else if in.State != "on" {
+		bad(w, 400, errors.New("invalid state"))
+		return
+	}
+	out, err := exec.Command("systemctl", verb, "tcp-brutal-canary-manager.service", "tcp-brutal-canary-web.service").CombinedOutput()
+	if err != nil {
+		bad(w, 500, fmt.Errorf("%s: %w", out, err))
+		return
+	}
+	m.history.addEvent("autostart", in)
+	jsonReply(w, 200, map[string]string{"state": in.State})
+}
+
+func autostartState(query func(string) (string, error)) map[string]any {
+	services := []string{"tcp-brutal-canary-manager.service", "tcp-brutal-canary-web.service"}
+	states := make([]bool, len(services))
+	unknown := false
+	for i, service := range services {
+		value, err := query(service)
+		value = strings.TrimSpace(value)
+		if err != nil && value != "disabled" && value != "static" && value != "masked" {
+			unknown = true
+		}
+		states[i] = value == "enabled"
+	}
+	state := "off"
+	if unknown {
+		state = "unknown"
+	} else if states[0] && states[1] {
+		state = "on"
+	} else if states[0] || states[1] {
+		state = "partial"
+	}
+	return map[string]any{"state": state, "manager": states[0], "web": states[1]}
+}
+
+func (m *manager) autostartStatus(w http.ResponseWriter, r *http.Request) {
+	jsonReply(w, 200, autostartState(func(service string) (string, error) {
+		out, err := exec.Command("systemctl", "is-enabled", service).CombinedOutput()
+		return string(out), err
+	}))
+}
+
+func (m *manager) startUpdate(w http.ResponseWriter, r *http.Request) {
+	bad(w, http.StatusNotImplemented, errors.New("Canary self-update is disabled; use install-canary.sh from the canary branch"))
+}
+
+func (m *manager) updateJobState(state, detail string) {
+	m.mu.Lock()
+	m.job.State = state
+	m.job.Detail = detail
+	m.mu.Unlock()
+	m.history.addEvent("update", map[string]string{"state": state, "detail": detail})
+}
+
+type updateJob struct {
+	ID      string `json:"id"`
+	State   string `json:"state"`
+	Detail  string `json:"detail"`
+	Started int64  `json:"started"`
+}
+
+func (m *manager) checkUpdate(w http.ResponseWriter, r *http.Request) {
+	jsonReply(w, http.StatusOK, map[string]string{
+		"installed": version,
+		"latest":    version,
+		"notes":     "Canary releases are managed separately from baseline; use install-canary.sh.",
+		"url":       "",
+	})
+}
+
+func (m *manager) performUpdate(id string) {
+	m.updateJobState("failed", "Canary self-update is disabled; use install-canary.sh")
+}
