@@ -112,7 +112,24 @@ func managerMode() error {
 			}
 		}
 	}
-	if err = os.MkdirAll("/run/tcp-brutal-custom", 0750); err != nil {
+	for _, p := range cfg.ABPorts {
+		if p.Enabled {
+			if err = m.applyABPort(p); err != nil {
+				return fmt.Errorf("restore A/B port %d: %w", p.Port, err)
+			}
+			epochID, e := m.history.ensureABEpoch(p, "manager_restart")
+			if e != nil {
+				return fmt.Errorf("restore A/B epoch %d: %w", p.Port, e)
+			}
+			if err = m.history.reconcileABRollout(p, epochID); err != nil {
+				return fmt.Errorf("restore A/B rollout %d: %w", p.Port, err)
+			}
+			if err = m.seedABNow(p); err != nil {
+				return fmt.Errorf("restore A/B checkpoint %d: %w", p.Port, err)
+			}
+		}
+	}
+	if err = os.MkdirAll("/run/tcp-brutal-canary", 0750); err != nil {
 		return err
 	}
 	group, err := user.LookupGroup("tcpbrutal")
@@ -123,7 +140,7 @@ func managerMode() error {
 	if err != nil {
 		return err
 	}
-	os.Chown("/run/tcp-brutal-custom", 0, gid)
+	os.Chown("/run/tcp-brutal-canary", 0, gid)
 	if err = writePublicWebConfig(cfg, gid); err != nil {
 		return err
 	}
@@ -156,8 +173,8 @@ func managerMode() error {
 	return err
 }
 
-func parsePorts() ([]portState, error) {
-	b, err := os.ReadFile(portsPath)
+func parsePortsAt(path string) ([]portState, error) {
+	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -181,6 +198,42 @@ func parsePorts() ([]portState, error) {
 	return out, nil
 }
 
+func parsePorts() ([]portState, error) { return parsePortsAt(portsPath) }
+
+func findPortState(states []portState, port uint16) (portState, bool) {
+	var fallback portState
+	found := false
+	for _, p := range states {
+		if p.Port != port {
+			continue
+		}
+		if p.Active {
+			return p, true
+		}
+		if !found {
+			fallback = p
+			found = true
+		}
+	}
+	return fallback, found
+}
+
+func abCohortStates(cfg abPortConfig, baselineStates, canaryStates []portState) (portState, portState, error) {
+	base, bok := findPortState(baselineStates, cfg.Port)
+	canary, cok := findPortState(canaryStates, cfg.Port)
+	if !bok && cfg.CanaryPercent == 100 {
+		base, bok = portState{Port: cfg.Port}, true
+	}
+	if !cok && cfg.CanaryPercent == 0 {
+		canary, cok = portState{Port: cfg.Port}, true
+	}
+	if !bok || !cok {
+		return portState{}, portState{}, fmt.Errorf("missing A/B cohort state baseline=%v canary=%v", bok, cok)
+	}
+	base.Port, canary.Port = cfg.Port, cfg.Port
+	return base, canary, nil
+}
+
 func writePort(command string) error {
 	f, err := os.OpenFile(portsPath, os.O_WRONLY, 0)
 	if err != nil {
@@ -188,6 +241,14 @@ func writePort(command string) error {
 	}
 	defer f.Close()
 	_, err = f.WriteString(command + "\n")
+	return err
+}
+
+func deletePort(writer func(string) error, port uint16) error {
+	err := writer(fmt.Sprintf("del %d", port))
+	if errors.Is(err, unix.ENOENT) {
+		return nil
+	}
 	return err
 }
 
@@ -201,15 +262,144 @@ func validatePort(p portConfig, webPort uint16) error {
 	return nil
 }
 
+func baselineOwnsPort(port uint16) bool {
+	b, err := os.ReadFile(baselinePortsPath)
+	if err != nil {
+		return false
+	}
+	needle := fmt.Sprintf("port=%d ", port)
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(line, needle) && strings.Contains(line, " active=1 ") {
+			return true
+		}
+	}
+	return false
+}
+
+func baselineManagerOwnsPort(port uint16) bool {
+	b, err := os.ReadFile(baselineConfigPath)
+	if err != nil {
+		return false
+	}
+	var cfg struct {
+		Ports []portConfig `json:"ports"`
+	}
+	if json.Unmarshal(b, &cfg) != nil {
+		return true
+	}
+	for _, p := range cfg.Ports {
+		if p.Port == port && p.Enabled {
+			return true
+		}
+	}
+	return false
+}
+
+func writeBaselinePort(command string) error {
+	f, err := os.OpenFile(baselinePortsPath, os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(command + "\n")
+	return err
+}
+
+func (m *manager) applyABPort(p abPortConfig) error {
+	if err := validatePort(portConfig{Port: p.Port, RateMbps: p.RateMbps, Gain: p.Gain, Enabled: p.Enabled}, m.cfg.WebPort); err != nil {
+		return err
+	}
+	if p.CanaryPercent > 100 {
+		return errors.New("canary percentage must be between 0 and 100")
+	}
+	if baselineManagerOwnsPort(p.Port) {
+		return fmt.Errorf("port %d is configured in baseline manager; remove it there before A/B takeover", p.Port)
+	}
+	for _, cp := range m.cfg.Ports {
+		if cp.Port == p.Port && cp.Enabled {
+			return fmt.Errorf("port %d is already configured as canary-only", p.Port)
+		}
+	}
+	totalRate := uint64(p.RateMbps*1e6/8 + 0.5)
+	canaryRate := totalRate * uint64(p.CanaryPercent) / 100
+	baselineRate := totalRate - canaryRate
+	minRate := uint64(500000 / 8) // 0.5 Mbps, matches kernel MIN_PACING_RATE.
+	if p.CanaryPercent > 0 && canaryRate < minRate {
+		return fmt.Errorf("canary share is below the 0.5 Mbps kernel minimum; increase total rate or canary percentage")
+	}
+	if p.CanaryPercent < 100 && baselineRate < minRate {
+		return fmt.Errorf("baseline share is below the 0.5 Mbps kernel minimum; increase total rate or reduce canary percentage")
+	}
+
+	if baselineRate > 0 {
+		if err := writeBaselinePort(fmt.Sprintf("add %d rate=%d gain=%d", p.Port, baselineRate, p.Gain)); err != nil {
+			return fmt.Errorf("baseline group: %w", err)
+		}
+	} else if err := deletePort(writeBaselinePort, p.Port); err != nil {
+		return fmt.Errorf("disable baseline group: %w", err)
+	}
+	if canaryRate > 0 {
+		if err := writePort(fmt.Sprintf("add %d rate=%d gain=%d", p.Port, canaryRate, p.Gain)); err != nil {
+			_ = deletePort(writeBaselinePort, p.Port)
+			return fmt.Errorf("canary group: %w", err)
+		}
+	} else if err := deletePort(writePort, p.Port); err != nil {
+		return fmt.Errorf("disable canary group: %w", err)
+	}
+	if err := m.selector.Enable(p.Port, p.CanaryPercent); err != nil {
+		_ = deletePort(writePort, p.Port)
+		_ = deletePort(writeBaselinePort, p.Port)
+		return err
+	}
+	return nil
+}
+
+func (m *manager) seedABNow(cfg abPortConfig) error {
+	baselineStates, err := parsePortsAt(baselinePortsPath)
+	if err != nil {
+		return err
+	}
+	canaryStates, err := parsePortsAt(portsPath)
+	if err != nil {
+		return err
+	}
+	base, canary, err := abCohortStates(cfg, baselineStates, canaryStates)
+	if err != nil {
+		return err
+	}
+	c, err := m.selector.Count(cfg.Port)
+	if err != nil {
+		return err
+	}
+	return m.history.seedAB(cfg.Port, base, canary, c)
+}
+
+func (m *manager) disableABPort(port uint16) error {
+	if err := m.selector.Disable(port); err != nil {
+		return err
+	}
+	var first error
+	if err := deletePort(writePort, port); err != nil {
+		first = err
+	}
+	if err := deletePort(writeBaselinePort, port); err != nil && first == nil {
+		first = err
+	}
+	return first
+}
+
 func (m *manager) applyPort(p portConfig) error {
 	if err := validatePort(p, m.cfg.WebPort); err != nil {
 		return err
+	}
+	if baselineOwnsPort(p.Port) {
+		return fmt.Errorf("port %d is already managed by baseline tcp-brutal-custom", p.Port)
 	}
 	rate := uint64(p.RateMbps*1e6/8 + 0.5)
 	if err := writePort(fmt.Sprintf("add %d rate=%d gain=%d", p.Port, rate, p.Gain)); err != nil {
 		return err
 	}
-	if err := m.selector.Enable(p.Port); err != nil {
+	if err := m.selector.Enable(p.Port, 100); err != nil {
 		return err
 	}
 	return nil
@@ -219,8 +409,8 @@ func (m *manager) disablePort(port uint16) error {
 	if err := m.selector.Disable(port); err != nil {
 		return err
 	}
-	if err := writePort(fmt.Sprintf("del %d", port)); err != nil {
-		m.selector.Enable(port)
+	if err := deletePort(writePort, port); err != nil {
+		m.selector.Enable(port, 100)
 		return err
 	}
 	return nil
@@ -236,13 +426,16 @@ func (m *manager) collect(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			states, err := parsePorts()
+			canaryStates, err := parsePortsAt(portsPath)
 			if err != nil {
-				log.Printf("sampling: %v", err)
+				log.Printf("sampling canary: %v", err)
 				continue
 			}
+			baselineStates, baselineErr := parsePortsAt(baselinePortsPath)
 			now := time.Now().Unix()
-			for _, p := range states {
+
+			// Preserve the existing canary-only history.
+			for _, p := range canaryStates {
 				var c selectorCount
 				if p.Active {
 					c, err = m.selector.Count(p.Port)
@@ -251,9 +444,63 @@ func (m *manager) collect(ctx context.Context) {
 						continue
 					}
 				}
-				x := sample{Time: now, Port: p.Port, Group: p.Group, Sent: p.Sent, Acked: p.Acked, Retrans: p.Retrans, Success: c.Success, Failure: c.Failure, Members: p.Members, RTTSum: p.RTTSum, RTTSamples: p.RTTSamples, RTTMax: p.RTTMax}
+				x := sample{Time: now, Port: p.Port, Group: p.Group, Sent: p.Sent, Acked: p.Acked, Retrans: p.Retrans, Success: c.Success(), Failure: c.Failure, Members: p.Members, RTTSum: p.RTTSum, RTTSamples: p.RTTSamples, RTTMax: p.RTTMax}
 				if err = m.history.record(x); err != nil {
 					log.Printf("history: %v", err)
+				}
+			}
+
+			if baselineErr != nil {
+				log.Printf("sampling baseline: %v", baselineErr)
+				continue
+			}
+			m.mu.Lock()
+			abPorts := append([]abPortConfig(nil), m.cfg.ABPorts...)
+			m.mu.Unlock()
+			for _, cfg := range abPorts {
+				if !cfg.Enabled {
+					continue
+				}
+				epochID := m.history.currentABEpoch(cfg.Port)
+				if epochID == 0 {
+					epochID, err = m.history.ensureABEpoch(cfg, "collector_recovery")
+					if err != nil {
+						log.Printf("A/B epoch %d: %v", cfg.Port, err)
+						continue
+					}
+				}
+				base, canary, stateErr := abCohortStates(cfg, baselineStates, canaryStates)
+				if stateErr != nil {
+					log.Printf("A/B sample port %d: %v", cfg.Port, stateErr)
+					continue
+				}
+				c, e := m.selector.Count(cfg.Port)
+				if e != nil {
+					log.Printf("A/B selector %d: %v", cfg.Port, e)
+					continue
+				}
+				if err = m.history.recordABCohort(epochID, "baseline", base, now); err != nil {
+					log.Printf("A/B baseline history %d: %v", cfg.Port, err)
+				}
+				if err = m.history.recordABCohort(epochID, "canary", canary, now); err != nil {
+					log.Printf("A/B canary history %d: %v", cfg.Port, err)
+				}
+				if err = m.history.recordABSelector(epochID, cfg.Port, c, now); err != nil {
+					log.Printf("A/B selector history %d: %v", cfg.Port, err)
+				}
+				if cfg.SafetyPlan != nil {
+					eval, safetyErr := m.evaluateABSafety(cfg, epochID, now)
+					if safetyErr != nil {
+						log.Printf("A/B safety evaluation %d: %v", cfg.Port, safetyErr)
+					} else {
+						rolloutID := int64(0)
+						if rollout, e := m.history.activeABRollout(cfg.Port); e == nil && rollout != nil {
+							rolloutID = rollout.ID
+						}
+						if e := m.history.syncABSafetyAlerts(eval, rolloutID); e != nil {
+							log.Printf("A/B safety alerts %d: %v", cfg.Port, e)
+						}
+					}
 				}
 			}
 		case <-cleanup.C:
@@ -447,6 +694,30 @@ func (m *manager) api(w http.ResponseWriter, r *http.Request) {
 		m.putPort(w, r)
 	case r.Method == "DELETE" && strings.HasPrefix(r.URL.Path, "/api/v1/ports/"):
 		m.deletePort(w, r)
+	case r.Method == "GET" && r.URL.Path == "/api/v1/ab":
+		m.listAB(w, r)
+	case r.Method == "POST" && r.URL.Path == "/api/v1/ab":
+		m.putAB(w, r)
+	case (r.Method == "PUT" || r.Method == "DELETE") && strings.HasPrefix(r.URL.Path, "/api/v1/ab/"):
+		m.changeAB(w, r)
+	case r.Method == "GET" && r.URL.Path == "/api/v1/ab/ports":
+		m.abPortsAPI(w, r)
+	case r.Method == "GET" && r.URL.Path == "/api/v1/ab/summary":
+		m.abSummaryAPI(w, r)
+	case r.Method == "GET" && r.URL.Path == "/api/v1/ab/analysis":
+		m.abAnalysisAPI(w, r)
+	case r.Method == "GET" && r.URL.Path == "/api/v1/ab/safety":
+		m.abSafetyAPI(w, r)
+	case r.Method == "GET" && r.URL.Path == "/api/v1/ab/rollout":
+		m.abRolloutAPI(w, r)
+	case r.Method == "POST" && strings.HasPrefix(r.URL.Path, "/api/v1/ab/rollout/"):
+		m.abRolloutActionAPI(w, r)
+	case r.Method == "GET" && r.URL.Path == "/api/v1/ab/series":
+		m.abSeriesAPI(w, r)
+	case r.Method == "GET" && r.URL.Path == "/api/v1/ab/report":
+		m.abReportAPI(w, r)
+	case r.Method == "POST" && r.URL.Path == "/api/v1/ab/app-metrics":
+		m.abAppMetricsAPI(w, r)
 	case r.Method == "GET" && r.URL.Path == "/api/v1/metrics":
 		m.metrics(w, r)
 	case r.Method == "PUT" && r.URL.Path == "/api/v1/password":
@@ -568,6 +839,366 @@ func (m *manager) deletePort(w http.ResponseWriter, r *http.Request) {
 	jsonReply(w, 200, map[string]any{"deleted": n})
 }
 
+func (m *manager) listAB(w http.ResponseWriter, r *http.Request) {
+	m.mu.Lock()
+	ports := append([]abPortConfig(nil), m.cfg.ABPorts...)
+	m.mu.Unlock()
+	type row struct {
+		abPortConfig
+		Selector selectorCount `json:"selector"`
+	}
+	out := make([]row, 0, len(ports))
+	for _, p := range ports {
+		var c selectorCount
+		if p.Enabled {
+			c, _ = m.selector.Count(p.Port)
+		}
+		out = append(out, row{abPortConfig: p, Selector: c})
+	}
+	jsonReply(w, 200, out)
+}
+
+func (m *manager) putAB(w http.ResponseWriter, r *http.Request) {
+	var p abPortConfig
+	if err := decode(r, &p); err != nil {
+		bad(w, 400, err)
+		return
+	}
+	if p.Gain == 0 {
+		p.Gain = 20
+	}
+	plan, err := effectiveABExperimentPlan(p.AnalysisPlan)
+	if err != nil {
+		bad(w, 400, err)
+		return
+	}
+	p.AnalysisPlan = &plan
+	rollout, err := effectiveABRolloutPlan(p.RolloutPlan, p.CanaryPercent)
+	if err != nil {
+		bad(w, 400, err)
+		return
+	}
+	if rollout != nil && rollout.Stages[0] != p.CanaryPercent {
+		bad(w, 400, errors.New("first rollout stage must equal the initial canary percentage"))
+		return
+	}
+	p.RolloutPlan = rollout
+	safety, err := effectiveABSafetyPlan(p.SafetyPlan)
+	if err != nil {
+		bad(w, 400, err)
+		return
+	}
+	p.SafetyPlan = &safety
+	p.Enabled = true
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, v := range m.cfg.ABPorts {
+		if v.Port == p.Port {
+			bad(w, 409, errors.New("A/B port already configured"))
+			return
+		}
+	}
+	if err := m.applyABPort(p); err != nil {
+		bad(w, 500, err)
+		return
+	}
+	previousCfg := m.cfg
+	next := previousCfg
+	next.ABPorts = append(append([]abPortConfig(nil), previousCfg.ABPorts...), p)
+	if err := saveConfig(next); err != nil {
+		_ = m.disableABPort(p.Port)
+		bad(w, 500, err)
+		return
+	}
+	m.cfg = next
+	epochID, err := m.history.beginABEpoch(p, "ab_add")
+	if err != nil {
+		_ = m.disableABPort(p.Port)
+		_ = saveConfig(previousCfg)
+		m.cfg = previousCfg
+		bad(w, 500, err)
+		return
+	}
+	if p.RolloutPlan != nil {
+		if _, err = m.history.beginABRollout(p, epochID); err != nil {
+			_ = m.history.closeABEpoch(p.Port, "rollout_create_failed")
+			_ = m.disableABPort(p.Port)
+			_ = saveConfig(previousCfg)
+			m.cfg = previousCfg
+			bad(w, 500, err)
+			return
+		}
+	}
+	if err := m.seedABNow(p); err != nil {
+		log.Printf("A/B epoch seed %d: %v", p.Port, err)
+	}
+	m.history.addEvent("ab_add", p)
+	jsonReply(w, 200, p)
+}
+
+func (m *manager) changeAB(w http.ResponseWriter, r *http.Request) {
+	n, err := strconv.ParseUint(strings.TrimPrefix(r.URL.Path, "/api/v1/ab/"), 10, 16)
+	if err != nil || n == 0 {
+		bad(w, 400, errors.New("invalid port"))
+		return
+	}
+	port := uint16(n)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	idx := -1
+	for i, p := range m.cfg.ABPorts {
+		if p.Port == port {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		bad(w, 404, errors.New("A/B port not configured"))
+		return
+	}
+	previous := m.cfg.ABPorts[idx]
+	if r.Method == "DELETE" {
+		if previous.Enabled {
+			if err = m.disableABPort(port); err != nil {
+				bad(w, 500, err)
+				return
+			}
+		}
+		next := m.cfg
+		next.ABPorts = append(append([]abPortConfig(nil), m.cfg.ABPorts[:idx]...), m.cfg.ABPorts[idx+1:]...)
+		if err = saveConfig(next); err != nil {
+			_ = m.applyABPort(previous)
+			bad(w, 500, err)
+			return
+		}
+		m.cfg = next
+		if err := m.history.closeABEpoch(port, "ab_delete"); err != nil {
+			log.Printf("A/B epoch close %d: %v", port, err)
+		}
+		if rollout, e := m.history.activeABRollout(port); e == nil && rollout != nil {
+			_ = m.history.closeABRolloutStage(rollout.CurrentStageID, "stopped", "ab_delete")
+			_ = m.history.setABRolloutStatus(rollout.ID, "stopped", true)
+			_ = m.history.addABRolloutEvent(rollout.ID, port, "stop", previous.CanaryPercent, previous.CanaryPercent, rollout.CurrentEpochID, "A/B experiment deleted")
+		}
+		m.history.addEvent("ab_delete", previous)
+		jsonReply(w, 200, map[string]any{"deleted": port})
+		return
+	}
+	var in struct {
+		CanaryPercent uint8 `json:"canary_percent"`
+	}
+	if err = decode(r, &in); err != nil || in.CanaryPercent > 100 {
+		bad(w, 400, errors.New("invalid canary percentage"))
+		return
+	}
+	if previous.RolloutPlan != nil {
+		bad(w, 409, errors.New("managed rollout percentage cannot be changed directly; use rollout actions"))
+		return
+	}
+	next := m.cfg
+	next.ABPorts = append([]abPortConfig(nil), m.cfg.ABPorts...)
+	next.ABPorts[idx].CanaryPercent = in.CanaryPercent
+	if err = m.applyABPort(next.ABPorts[idx]); err != nil {
+		bad(w, 500, err)
+		return
+	}
+	if err = saveConfig(next); err != nil {
+		_ = m.applyABPort(previous)
+		bad(w, 500, err)
+		return
+	}
+	m.cfg = next
+	if _, err := m.history.beginABEpoch(next.ABPorts[idx], "percentage_change"); err != nil {
+		log.Printf("A/B epoch change %d: %v", port, err)
+	} else if err := m.seedABNow(next.ABPorts[idx]); err != nil {
+		log.Printf("A/B epoch seed %d: %v", port, err)
+	}
+	m.history.addEvent("ab_percent", map[string]any{"port": port, "before": previous.CanaryPercent, "after": in.CanaryPercent})
+	jsonReply(w, 200, next.ABPorts[idx])
+}
+
+func abRange(r *http.Request) (uint16, int64, int64, error) {
+	q := r.URL.Query()
+	pv, err := strconv.ParseUint(q.Get("port"), 10, 16)
+	if err != nil || pv == 0 {
+		return 0, 0, 0, errors.New("valid port is required")
+	}
+	to, _ := strconv.ParseInt(q.Get("to"), 10, 64)
+	if to == 0 {
+		to = time.Now().Unix()
+	}
+	from, _ := strconv.ParseInt(q.Get("from"), 10, 64)
+	if from == 0 {
+		from = to - 24*3600
+	}
+	if from >= to || to-from > 366*86400 {
+		return 0, 0, 0, errors.New("invalid time range")
+	}
+	return uint16(pv), from, to, nil
+}
+
+func (m *manager) abPortsAPI(w http.ResponseWriter, r *http.Request) {
+	ports, err := m.history.abPorts()
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	jsonReply(w, 200, map[string]any{"ports": ports})
+}
+
+func (m *manager) abSummaryAPI(w http.ResponseWriter, r *http.Request) {
+	port, from, to, err := abRange(r)
+	if err != nil {
+		bad(w, 400, err)
+		return
+	}
+	rows, err := m.history.abSummaries(port, from, to)
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	epochs, err := m.history.abEpochs(port, from, to)
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	policy := defaultABAnalysisPolicy()
+	comparisons := buildABComparisons(rows, policy)
+	jsonReply(w, 200, map[string]any{"port": port, "from": from, "to": to, "epochs": epochs, "summaries": rows, "analysis_policy": policy, "comparisons": comparisons})
+}
+
+func (m *manager) abAnalysisAPI(w http.ResponseWriter, r *http.Request) {
+	port, from, to, err := abRange(r)
+	if err != nil {
+		bad(w, 400, err)
+		return
+	}
+	summaries, err := m.history.abSummaries(port, from, to)
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	epochs, err := m.history.abEpochs(port, from, to)
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	samples, err := m.history.abSamples("minute", port, from, to)
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	plans, err := m.history.abPlans(port, from, to)
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	policy := defaultABAnalysisPolicy()
+	comparisons := buildABComparisons(summaries, policy)
+	analyses := buildABEpochAnalyses(epochs, summaries, comparisons, samples, plans)
+	jsonReply(w, 200, map[string]any{
+		"port": port, "from": from, "to": to,
+		"analysis_policy": policy, "analyses": analyses,
+	})
+}
+
+func (m *manager) abSafetyAPI(w http.ResponseWriter, r *http.Request) {
+	pv, err := strconv.ParseUint(r.URL.Query().Get("port"), 10, 16)
+	if err != nil || pv == 0 {
+		bad(w, 400, errors.New("valid port is required"))
+		return
+	}
+	view, err := m.safetyView(uint16(pv))
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	if view == nil {
+		bad(w, 404, errors.New("active safety view not found"))
+		return
+	}
+	jsonReply(w, 200, view)
+}
+
+func (m *manager) abSeriesAPI(w http.ResponseWriter, r *http.Request) {
+	port, from, to, err := abRange(r)
+	if err != nil {
+		bad(w, 400, err)
+		return
+	}
+	tier := r.URL.Query().Get("tier")
+	if tier == "" {
+		tier = "minute"
+	}
+	samples, err := m.history.abSamples(tier, port, from, to)
+	if err != nil {
+		bad(w, 400, err)
+		return
+	}
+	selectors, err := m.history.abSelectorSamples(tier, port, from, to)
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	app, err := m.history.abAppSamples(tier, port, from, to)
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	jsonReply(w, 200, map[string]any{
+		"port": port, "from": from, "to": to, "tier": tier,
+		"samples": samples, "selectors": selectors, "app_samples": app,
+	})
+}
+
+func (m *manager) abReportAPI(w http.ResponseWriter, r *http.Request) {
+	port, from, to, err := abRange(r)
+	if err != nil {
+		bad(w, 400, err)
+		return
+	}
+	tier := r.URL.Query().Get("tier")
+	if tier == "" {
+		tier = "minute"
+	}
+	data, err := buildABReport(m.history, port, from, to, tier)
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	name := fmt.Sprintf("brutal-ab-port-%d-%d-%d.zip", port, from, to)
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", name))
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+func (m *manager) abAppMetricsAPI(w http.ResponseWriter, r *http.Request) {
+	var x abAppSample
+	if err := decode(r, &x); err != nil {
+		bad(w, 400, err)
+		return
+	}
+	if x.Port == 0 || (x.Cohort != "baseline" && x.Cohort != "canary") {
+		bad(w, 400, errors.New("port and cohort are required"))
+		return
+	}
+	if x.Requests != x.Success+x.Errors {
+		bad(w, 400, errors.New("requests must equal success + errors"))
+		return
+	}
+	if x.LatencySamples > x.Requests {
+		bad(w, 400, errors.New("latency_samples cannot exceed requests"))
+		return
+	}
+	if err := m.history.recordABApp(x); err != nil {
+		bad(w, 500, err)
+		return
+	}
+	jsonReply(w, 200, map[string]any{"stored": true, "port": x.Port, "cohort": x.Cohort, "source": x.Source})
+}
+
 func (m *manager) metrics(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	tier := q.Get("tier")
@@ -595,7 +1226,7 @@ func (m *manager) metrics(w http.ResponseWriter, r *http.Request) {
 	}
 	if q.Get("format") == "csv" {
 		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-		w.Header().Set("Content-Disposition", "attachment; filename=brutal-history.csv")
+		w.Header().Set("Content-Disposition", "attachment; filename=brutal-canary-history.csv")
 		csvw := csv.NewWriter(w)
 		csvw.Write([]string{"time_unix", "port", "group", "sent_bytes", "acked_bytes", "retrans_bytes", "retrans_percent", "success", "failure", "members", "rtt_mean_us", "rtt_max_us", "gap", "event", "expected_bytes", "actual_bytes"})
 		for _, x := range rows {
@@ -741,7 +1372,7 @@ func (m *manager) autostart(w http.ResponseWriter, r *http.Request) {
 		bad(w, 400, errors.New("invalid state"))
 		return
 	}
-	out, err := exec.Command("systemctl", verb, "tcp-brutal-custom-manager.service", "tcp-brutal-custom-web.service").CombinedOutput()
+	out, err := exec.Command("systemctl", verb, "tcp-brutal-canary-manager.service", "tcp-brutal-canary-web.service").CombinedOutput()
 	if err != nil {
 		bad(w, 500, fmt.Errorf("%s: %w", out, err))
 		return
@@ -751,7 +1382,7 @@ func (m *manager) autostart(w http.ResponseWriter, r *http.Request) {
 }
 
 func autostartState(query func(string) (string, error)) map[string]any {
-	services := []string{"tcp-brutal-custom-manager.service", "tcp-brutal-custom-web.service"}
+	services := []string{"tcp-brutal-canary-manager.service", "tcp-brutal-canary-web.service"}
 	states := make([]bool, len(services))
 	unknown := false
 	for i, service := range services {
@@ -781,34 +1412,7 @@ func (m *manager) autostartStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *manager) startUpdate(w http.ResponseWriter, r *http.Request) {
-	// Maintenance update disconnects managed TCP sessions and replaces a kernel
-	// module. Keep that high-impact action local to a root caller on the Unix
-	// socket; authenticated Web sessions may only check for updates.
-	if r.Context().Value(peerKey{}) != uint32(0) {
-		bad(w, 403, errors.New("maintenance update requires local root CLI"))
-		return
-	}
-	m.mu.Lock()
-	if m.job.State == "running" || exec.Command("systemctl", "is-active", "--quiet", "tcp-brutal-custom-update.service").Run() == nil {
-		m.mu.Unlock()
-		bad(w, 409, errors.New("update already running"))
-		return
-	}
-	id, err := randomToken(8)
-	if err != nil {
-		m.mu.Unlock()
-		bad(w, 500, err)
-		return
-	}
-	if err = os.WriteFile(dataDir+"/update-id", []byte(id), 0600); err != nil {
-		m.mu.Unlock()
-		bad(w, 500, err)
-		return
-	}
-	m.job = updateJob{ID: id, State: "running", Started: time.Now().Unix()}
-	m.mu.Unlock()
-	go m.performUpdate(id)
-	jsonReply(w, 202, map[string]string{"job_id": id})
+	bad(w, http.StatusNotImplemented, errors.New("Canary self-update is disabled; use install-canary.sh from the canary branch"))
 }
 
 func (m *manager) updateJobState(state, detail string) {
@@ -827,42 +1431,14 @@ type updateJob struct {
 }
 
 func (m *manager) checkUpdate(w http.ResponseWriter, r *http.Request) {
-	client := &http.Client{Timeout: 8 * time.Second}
-	request, err := http.NewRequestWithContext(r.Context(), "GET", "https://api.github.com/repos/sagehere/tcp-brutal-custom/releases/latest", nil)
-	if err != nil {
-		bad(w, 500, err)
-		return
-	}
-	request.Header.Set("Accept", "application/vnd.github+json")
-	response, err := client.Do(request)
-	if err != nil {
-		bad(w, 502, err)
-		return
-	}
-	defer response.Body.Close()
-	if response.StatusCode != 200 {
-		bad(w, 502, fmt.Errorf("GitHub returned %d", response.StatusCode))
-		return
-	}
-	var release struct {
-		Tag  string `json:"tag_name"`
-		Body string `json:"body"`
-		URL  string `json:"html_url"`
-	}
-	if err = json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&release); err != nil {
-		bad(w, 502, err)
-		return
-	}
-	jsonReply(w, 200, map[string]string{"installed": version, "latest": release.Tag, "notes": release.Body, "url": release.URL})
+	jsonReply(w, http.StatusOK, map[string]string{
+		"installed": version,
+		"latest":    version,
+		"notes":     "Canary releases are managed separately from baseline; use install-canary.sh.",
+		"url":       "",
+	})
 }
 
 func (m *manager) performUpdate(id string) {
-	// A dedicated systemd unit owns module replacement so this manager can
-	// report the job and the work survives a browser disconnect.
-	out, err := exec.Command("systemctl", "start", "--no-block", "tcp-brutal-custom-update.service").CombinedOutput()
-	if err != nil {
-		m.updateJobState("failed", fmt.Sprintf("%s: %v", out, err))
-		return
-	}
-	m.updateJobState("running", "maintenance unit started")
+	m.updateJobState("failed", "Canary self-update is disabled; use install-canary.sh")
 }

@@ -27,14 +27,16 @@ import (
 )
 
 const (
-	configDir         = "/etc/tcp-brutal-custom"
-	dataDir           = "/var/lib/tcp-brutal-custom"
-	socketPath        = "/run/tcp-brutal-custom/manager.sock"
-	portsPath         = "/proc/net/tcp_brutal/ports"
-	panelPasswordFile = "/etc/tcp-brutal-custom/panel-password"
+	configDir          = "/etc/tcp-brutal-canary"
+	dataDir            = "/var/lib/tcp-brutal-canary"
+	socketPath         = "/run/tcp-brutal-canary/manager.sock"
+	portsPath          = "/proc/net/tcp_brutal_canary/ports"
+	baselinePortsPath  = "/proc/net/tcp_brutal/ports"
+	baselineConfigPath = "/etc/tcp-brutal-custom/config.json"
+	panelPasswordFile  = "/etc/tcp-brutal-canary/panel-password"
 )
 
-var version = "2.1.9-dev"
+var version = "2.1.9-canary-dev"
 
 type portConfig struct {
 	Port     uint16  `json:"port"`
@@ -43,13 +45,25 @@ type portConfig struct {
 	Enabled  bool    `json:"enabled"`
 }
 
+type abPortConfig struct {
+	Port          uint16            `json:"port"`
+	RateMbps      float64           `json:"rate_mbps"`
+	Gain          uint32            `json:"gain"`
+	CanaryPercent uint8             `json:"canary_percent"`
+	Enabled       bool              `json:"enabled"`
+	AnalysisPlan  *abExperimentPlan `json:"analysis_plan,omitempty"`
+	RolloutPlan   *abRolloutPlan    `json:"rollout_plan,omitempty"`
+	SafetyPlan    *abSafetyPlan     `json:"safety_plan,omitempty"`
+}
+
 type config struct {
-	WebHost      string       `json:"web_host"`
-	WebPort      uint16       `json:"web_port"`
-	AllowedIPs   []string     `json:"allowed_ips"`
-	PasswordSalt string       `json:"password_salt"`
-	PasswordHash string       `json:"password_hash"`
-	Ports        []portConfig `json:"ports"`
+	WebHost      string         `json:"web_host"`
+	WebPort      uint16         `json:"web_port"`
+	AllowedIPs   []string       `json:"allowed_ips"`
+	PasswordSalt string         `json:"password_salt"`
+	PasswordHash string         `json:"password_hash"`
+	Ports        []portConfig   `json:"ports"`
+	ABPorts      []abPortConfig `json:"ab_ports,omitempty"`
 }
 
 func configPath() string { return filepath.Join(configDir, "config.json") }
@@ -65,6 +79,23 @@ func loadConfig() (config, error) {
 	}
 	if c.WebHost == "" || c.WebPort == 0 {
 		return c, errors.New("invalid panel address")
+	}
+	for i := range c.ABPorts {
+		plan, e := effectiveABExperimentPlan(c.ABPorts[i].AnalysisPlan)
+		if e != nil {
+			return c, fmt.Errorf("invalid A/B analysis plan for port %d: %w", c.ABPorts[i].Port, e)
+		}
+		c.ABPorts[i].AnalysisPlan = &plan
+		rollout, e := effectiveABRolloutPlan(c.ABPorts[i].RolloutPlan, c.ABPorts[i].CanaryPercent)
+		if e != nil {
+			return c, fmt.Errorf("invalid A/B rollout plan for port %d: %w", c.ABPorts[i].Port, e)
+		}
+		c.ABPorts[i].RolloutPlan = rollout
+		safety, e := effectiveABSafetyPlan(c.ABPorts[i].SafetyPlan)
+		if e != nil {
+			return c, fmt.Errorf("invalid A/B safety plan for port %d: %w", c.ABPorts[i].Port, e)
+		}
+		c.ABPorts[i].SafetyPlan = &safety
 	}
 	return c, nil
 }
@@ -268,7 +299,7 @@ type publicWebConfig struct {
 }
 
 func loadPublicWebConfig() (publicWebConfig, error) {
-	b, err := os.ReadFile("/run/tcp-brutal-custom/panel.json")
+	b, err := os.ReadFile("/run/tcp-brutal-canary/panel.json")
 	if err != nil {
 		return publicWebConfig{}, err
 	}
@@ -278,7 +309,7 @@ func loadPublicWebConfig() (publicWebConfig, error) {
 }
 
 func writePublicWebConfig(c config, gid int) error {
-	p := "/run/tcp-brutal-custom/panel.json"
+	p := "/run/tcp-brutal-canary/panel.json"
 	b, err := json.Marshal(publicWebConfig{c.WebHost, c.WebPort, c.AllowedIPs})
 	if err != nil {
 		return err
@@ -313,6 +344,52 @@ func localRequest(method, path string, body io.Reader) error {
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
+	return nil
+}
+
+func localDownload(path, destination string) error {
+	req, err := http.NewRequest(http.MethodGet, "http://unix"+path, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := client().Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 65536))
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	dir := filepath.Dir(destination)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".ab-report-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err = io.Copy(tmp, io.LimitReader(resp.Body, 1<<30)); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err = tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err = tmp.Close(); err != nil {
+		return err
+	}
+	if err = os.Rename(name, destination); err != nil {
+		return err
+	}
+	fmt.Println(destination)
 	return nil
 }
 
@@ -363,13 +440,13 @@ func runCLI(args []string) error {
 			return restore(args[1])
 		}
 	case "install":
-		cmd := exec.Command("/usr/local/lib/tcp-brutal-custom/install.sh", "install")
+		cmd := exec.Command("/usr/local/lib/tcp-brutal-canary/install-canary.sh", "install")
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		return cmd.Run()
 	case "uninstall":
-		out, err := exec.Command("systemctl", "start", "--no-block", "tcp-brutal-custom-uninstall.service").CombinedOutput()
+		out, err := exec.Command("systemctl", "start", "--no-block", "tcp-brutal-canary-uninstall.service").CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
 		}
@@ -402,6 +479,220 @@ func runCLI(args []string) error {
 			}
 			b, _ := json.Marshal(portConfig{Port: uint16(port), RateMbps: rate, Gain: gain, Enabled: true})
 			return localRequest("POST", "/api/v1/ports", strings.NewReader(string(b)))
+		}
+	case "ab":
+		if len(args) >= 3 && args[1] == "rollout" {
+			port, e := strconv.ParseUint(args[2], 10, 16)
+			if e != nil || port == 0 {
+				return errors.New("invalid port")
+			}
+			if len(args) == 3 {
+				return localRequest("GET", fmt.Sprintf("/api/v1/ab/rollout?port=%d", port), nil)
+			}
+			if len(args) == 4 {
+				action := args[3]
+				switch action {
+				case "pause", "resume", "rollback", "retry", "advance", "complete":
+				default:
+					return errors.New("invalid rollout action")
+				}
+				return localRequest("POST", fmt.Sprintf("/api/v1/ab/rollout/%d/%s", port, action), strings.NewReader("{}"))
+			}
+			return errors.New("usage: tbc2-canary ab rollout PORT [pause|resume|rollback|retry|advance|complete]")
+		}
+		if len(args) == 3 && args[1] == "safety" {
+			port, e := strconv.ParseUint(args[2], 10, 16)
+			if e != nil || port == 0 {
+				return errors.New("invalid port")
+			}
+			return localRequest("GET", fmt.Sprintf("/api/v1/ab/safety?port=%d", port), nil)
+		}
+		if len(args) >= 3 && args[1] == "analysis" {
+			port, e := strconv.ParseUint(args[2], 10, 16)
+			if e != nil || port == 0 {
+				return errors.New("invalid port")
+			}
+			to := time.Now().Unix()
+			from := to - 24*3600
+			if len(args) == 5 {
+				from, e = strconv.ParseInt(args[3], 10, 64)
+				if e != nil {
+					return e
+				}
+				to, e = strconv.ParseInt(args[4], 10, 64)
+				if e != nil {
+					return e
+				}
+			}
+			path := fmt.Sprintf("/api/v1/ab/analysis?port=%d&from=%d&to=%d", port, from, to)
+			return localRequest("GET", path, nil)
+		}
+		if len(args) >= 3 && args[1] == "summary" {
+			port, e := strconv.ParseUint(args[2], 10, 16)
+			if e != nil || port == 0 {
+				return errors.New("invalid port")
+			}
+			to := time.Now().Unix()
+			from := to - 24*3600
+			if len(args) == 5 {
+				from, e = strconv.ParseInt(args[3], 10, 64)
+				if e != nil {
+					return e
+				}
+				to, e = strconv.ParseInt(args[4], 10, 64)
+				if e != nil {
+					return e
+				}
+			}
+			path := fmt.Sprintf("/api/v1/ab/summary?port=%d&from=%d&to=%d", port, from, to)
+			return localRequest("GET", path, nil)
+		}
+		if len(args) >= 4 && args[1] == "export" {
+			port, e := strconv.ParseUint(args[2], 10, 16)
+			if e != nil || port == 0 {
+				return errors.New("invalid port")
+			}
+			to := time.Now().Unix()
+			from := to - 24*3600
+			if len(args) == 6 {
+				from, e = strconv.ParseInt(args[4], 10, 64)
+				if e != nil {
+					return e
+				}
+				to, e = strconv.ParseInt(args[5], 10, 64)
+				if e != nil {
+					return e
+				}
+			}
+			path := fmt.Sprintf("/api/v1/ab/report?port=%d&from=%d&to=%d&tier=minute", port, from, to)
+			return localDownload(path, args[3])
+		}
+		if len(args) == 2 && args[1] == "list" {
+			return localRequest("GET", "/api/v1/ab", nil)
+		}
+		if len(args) >= 3 && args[1] == "del" {
+			return localRequest("DELETE", "/api/v1/ab/"+args[2], nil)
+		}
+		if len(args) == 4 && args[1] == "set" {
+			percent, e := strconv.ParseUint(args[3], 10, 8)
+			if e != nil || percent > 100 {
+				return errors.New("invalid canary percentage")
+			}
+			b, _ := json.Marshal(map[string]uint8{"canary_percent": uint8(percent)})
+			return localRequest("PUT", "/api/v1/ab/"+args[2], strings.NewReader(string(b)))
+		}
+		if len(args) >= 5 && args[1] == "add" {
+			port, e := strconv.ParseUint(args[2], 10, 16)
+			if e != nil {
+				return e
+			}
+			rate, e := strconv.ParseFloat(args[3], 64)
+			if e != nil {
+				return e
+			}
+			percent, e := strconv.ParseUint(args[4], 10, 8)
+			if e != nil || percent > 100 {
+				return errors.New("invalid canary percentage")
+			}
+			gain := uint32(20)
+			plan := defaultABExperimentPlan()
+			safety := defaultABSafetyPlan()
+			rollout := defaultABRolloutPlan(uint8(percent))
+			for _, opt := range args[5:] {
+				parts := strings.SplitN(opt, "=", 2)
+				if len(parts) != 2 {
+					return fmt.Errorf("invalid A/B option %q", opt)
+				}
+				switch parts[0] {
+				case "gain":
+					v, e := strconv.ParseUint(parts[1], 10, 32)
+					if e != nil {
+						return e
+					}
+					gain = uint32(v)
+				case "success":
+					plan.ExpectedAppSuccessPercent, e = strconv.ParseFloat(parts[1], 64)
+				case "ni":
+					plan.AppSuccessNIMarginPP, e = strconv.ParseFloat(parts[1], 64)
+				case "retrans":
+					plan.MaxRetransDeltaPP, e = strconv.ParseFloat(parts[1], 64)
+				case "rtt":
+					plan.MaxMeanRTTDeltaPercent, e = strconv.ParseFloat(parts[1], 64)
+				case "goodput":
+					plan.MinGoodputDeltaPercent, e = strconv.ParseFloat(parts[1], 64)
+				case "block":
+					var v int64
+					v, e = strconv.ParseInt(parts[1], 10, 32)
+					plan.BootstrapBlockMinutes = int(v)
+				case "alpha":
+					plan.Alpha, e = strconv.ParseFloat(parts[1], 64)
+				case "power":
+					plan.Power, e = strconv.ParseFloat(parts[1], 64)
+				case "safe-window":
+					safety.WindowSeconds, e = strconv.ParseUint(parts[1], 10, 64)
+				case "safe-connections":
+					safety.MinAssignedConnections, e = strconv.ParseUint(parts[1], 10, 64)
+				case "safe-app":
+					safety.MinAppRequestsPerCohort, e = strconv.ParseUint(parts[1], 10, 64)
+				case "safe-selector":
+					safety.MaxSelectorFailurePercent, e = strconv.ParseFloat(parts[1], 64)
+				case "safe-gaps":
+					safety.MaxGapSamples, e = strconv.ParseUint(parts[1], 10, 64)
+				case "safe-retrans":
+					safety.MaxRetransDeltaPP, e = strconv.ParseFloat(parts[1], 64)
+				case "safe-rtt":
+					safety.MaxMeanRTTDeltaPercent, e = strconv.ParseFloat(parts[1], 64)
+				case "safe-app-error":
+					safety.MaxAppErrorDeltaPP, e = strconv.ParseFloat(parts[1], 64)
+				case "safe-app-latency":
+					safety.MaxAppLatencyDeltaPercent, e = strconv.ParseFloat(parts[1], 64)
+				case "stages":
+					if rollout == nil {
+						rollout = &abRolloutPlan{ObservationWindowSeconds: 3600}
+					}
+					rollout.Stages = nil
+					for _, raw := range strings.Split(parts[1], ",") {
+						v, parseErr := strconv.ParseUint(strings.TrimSpace(raw), 10, 8)
+						if parseErr != nil || v == 0 || v > 100 {
+							return errors.New("invalid rollout stages")
+						}
+						rollout.Stages = append(rollout.Stages, uint8(v))
+					}
+				case "window":
+					if rollout == nil {
+						rollout = &abRolloutPlan{Stages: []uint8{uint8(percent)}}
+					}
+					rollout.ObservationWindowSeconds, e = strconv.ParseUint(parts[1], 10, 64)
+				case "orchestrate":
+					if parts[1] == "off" || parts[1] == "0" || parts[1] == "false" {
+						rollout = nil
+					} else if parts[1] != "on" && parts[1] != "1" && parts[1] != "true" {
+						return errors.New("orchestrate must be on or off")
+					}
+				default:
+					return fmt.Errorf("unknown A/B option %q", parts[0])
+				}
+				if e != nil {
+					return e
+				}
+			}
+			if _, e = effectiveABExperimentPlan(&plan); e != nil {
+				return e
+			}
+			if _, e = effectiveABSafetyPlan(&safety); e != nil {
+				return e
+			}
+			if rollout != nil {
+				rollout, e = effectiveABRolloutPlan(rollout, uint8(percent))
+				if e != nil {
+					return e
+				}
+				if rollout.Stages[0] != uint8(percent) {
+					return errors.New("first rollout stage must equal initial canary percentage")
+				}
+			}
+			b, _ := json.Marshal(abPortConfig{Port: uint16(port), RateMbps: rate, Gain: gain, CanaryPercent: uint8(percent), Enabled: true, AnalysisPlan: &plan, RolloutPlan: rollout, SafetyPlan: &safety})
+			return localRequest("POST", "/api/v1/ab", strings.NewReader(string(b)))
 		}
 	case "password":
 		if len(args) == 2 && args[1] == "show" {
@@ -447,7 +738,7 @@ func runCLI(args []string) error {
 			return localRequest("PUT", "/api/v1/autostart", strings.NewReader(string(b)))
 		}
 	}
-	return errors.New("usage: tbc2 [manager|web|init [panel-port]|status|ports|port add PORT Mbps [gain=20]|port del PORT|password NEW|update|autostart on|autostart off]")
+	return errors.New("usage: tbc2-canary [status|ports|port add ...|ab list|ab add PORT Mbps PERCENT [gain=N success=PCT ni=PP retrans=PP rtt=PCT goodput=PCT block=MIN alpha=A power=P stages=5,10,25,50,100 window=SECONDS orchestrate=on|off safe-window=SEC safe-connections=N safe-app=N safe-selector=PCT safe-gaps=N safe-retrans=PP safe-rtt=PCT safe-app-error=PP safe-app-latency=PCT]|ab rollout PORT [pause|resume|rollback|retry|advance|complete]|ab safety PORT|ab set PORT PERCENT|ab del PORT|ab summary PORT [FROM TO]|ab analysis PORT [FROM TO]|ab export PORT FILE [FROM TO]|password ...]")
 }
 
 func panelManagementMenu() error {
@@ -504,7 +795,7 @@ func panelManagementMenu() error {
 
 func menu() error {
 	for {
-		fmt.Printf("TCP Brutal Custom    v%s\n\n1  安装\n2  查看状态\n3  查看接管端口\n4  新增接管端口\n5  删除接管端口\n6  检查并升级\n7  开启开机启动\n8  关闭开机启动\n9  面板管理\n10 卸载\n11 备份配置\n12 恢复配置\n0  退出\n\n", version)
+		fmt.Printf("TCP Brutal Canary    v%s\n\n1  安装\n2  查看状态\n3  查看接管端口\n4  新增接管端口\n5  删除接管端口\n6  检查并升级\n7  开启开机启动\n8  关闭开机启动\n9  面板管理\n10 卸载\n11 备份配置\n12 恢复配置\n0  退出\n\n", version)
 		var choice, port, rate string
 		fmt.Print("请选择操作: ")
 		fmt.Scanln(&choice)

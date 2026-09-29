@@ -65,7 +65,7 @@ func parseConnections(output []byte, port uint16) ([]connection, error) {
 		if len(fields) > 5 && !strings.Contains(fields[5], ":") {
 			algorithm = fields[5]
 		}
-		rows = append(rows, connection{LocalIP: localIP, ClientIP: clientIP, ClientPort: clientPort, State: fields[0], Algorithm: algorithm, Managed: algorithm == "brutal"})
+		rows = append(rows, connection{LocalIP: localIP, ClientIP: clientIP, ClientPort: clientPort, State: fields[0], Algorithm: algorithm, Managed: algorithm == "brutal_adaptive"})
 	}
 	return rows, s.Err()
 }

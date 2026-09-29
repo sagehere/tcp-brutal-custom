@@ -1,12 +1,12 @@
 /*
  * brutalctl - manage TCP Brutal destination rules.
  *
- * A rule, kept by the kernel module in /proc/net/tcp_brutal/rules, puts every
+ * A rule, kept by the kernel module in /proc/net/tcp_brutal_canary/rules, puts every
  * connection to a destination prefix into one group sharing a rate, without
  * application support. For the kernel to actually use brutal for those
  * connections a route to the prefix must select it, so unless "noroute" is
  * given, add installs one with the ip command (same next hop as today, plus
- * "congctl lock brutal") and del/flush remove it. Routes created here carry
+ * "congctl lock brutal_adaptive") and del/flush remove it. Routes created here carry
  * protocol 233 and never touch routes created by anything else.
  *
  * Build: cc -O2 -Wall -o brutalctl brutalctl.c
@@ -21,8 +21,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#define RULES_PATH "/proc/net/tcp_brutal/rules"
-#define ROUTE_PROTO "233" /* rtnetlink protocol id marking brutalctl's routes */
+#define RULES_PATH "/proc/net/tcp_brutal_canary/rules"
+#define ROUTE_PROTO "234" /* rtnetlink protocol id marking brutalctl's routes */
 
 static int usage(void)
 {
@@ -34,7 +34,7 @@ static int usage(void)
           "\n"
           "All connections to the prefix share the rate as one group. add also installs\n"
           "the route that makes the kernel use brutal for the prefix (ip route replace\n"
-          "<prefix> ... congctl lock brutal proto " ROUTE_PROTO "); del and flush remove it.\n"
+          "<prefix> ... congctl lock brutal_adaptive proto " ROUTE_PROTO "); del and flush remove it.\n"
           "nolock lets applications set their own params on these connections.\n",
           stderr);
     return 2;
@@ -136,7 +136,7 @@ static int route_add(const char *prefix, int lock)
     argv[n++] = "congctl";
     if (lock)
         argv[n++] = "lock";
-    argv[n++] = "brutal";
+    argv[n++] = "brutal_adaptive";
     argv[n++] = "proto";
     argv[n++] = ROUTE_PROTO;
     argv[n] = NULL;
@@ -345,7 +345,7 @@ int main(int argc, char **argv)
 
         if (argc < 3 || argc > 15)
             return usage();
-        args[0] = "tbc";
+        args[0] = "tbc2-canary";
         if (!strcmp(argv[2], "list"))
         {
             args[1] = "ports";
@@ -358,7 +358,7 @@ int main(int argc, char **argv)
             args[argc - 1] = NULL;
         }
         execvp(args[0], args);
-        perror("brutalctl: tbc");
+        perror("brutalctl: tbc2-canary");
         return 1;
     }
     if (!strcmp(argv[1], "list") || !strcmp(argv[1], "ls"))

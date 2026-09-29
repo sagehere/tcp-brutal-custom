@@ -15,6 +15,9 @@
 #define BRUTAL_VERSION_PATCH 9
 #define BRUTAL_VERSION ((BRUTAL_VERSION_MAJOR << 16) | (BRUTAL_VERSION_MINOR << 8) | BRUTAL_VERSION_PATCH)
 
+#define BRUTAL_CC_NAME "brutal_adaptive"
+#define BRUTAL_PROC_DIR "tcp_brutal_canary"
+
 #define TCP_BRUTAL_PARAMS 23301  // setsockopt/getsockopt: struct brutal_params
 #define TCP_BRUTAL_VERSION 23302 // getsockopt: u32 (major << 16 | minor << 8 | patch)
 
@@ -67,6 +70,20 @@ struct brutal_stats_state
     u64 sent;
     u64 acked;
     u64 retrans;
+
+    u64 adaptive_ceiling;
+    u64 sample_start_acked;
+    u64 sample_start_us;
+    u64 last_probe_us;
+    u64 candidate_ceiling;
+    u64 last_delivery_rate;
+
+    u32 min_rtt_us;
+    u32 recent_losses;
+    u8 recent_loss_percent;
+    u8 congestion_limited;
+    u8 sample_active;
+    u8 candidate_samples;
 };
 
 // Per-socket state, lives in icsk_ca_priv
@@ -96,7 +113,7 @@ struct brutal_params
 
 // brutal_cc.c: the congestion control
 extern struct tcp_congestion_ops tcp_brutal_ops;
-void brutal_update_rate(struct sock *sk);
+void brutal_update_rate(struct sock *sk, const struct rate_sample *rs);
 void brutal_stats_flush(struct sock *sk);
 
 // brutal_sockopt.c: groups and the application interface
@@ -108,12 +125,12 @@ void brutal_sockopt_init(void);
 void brutal_sockopt_install(struct sock *sk);
 void brutal_sockopt_uninstall(struct sock *sk);
 
-// brutal_rules.c: destination rules and /proc/net/tcp_brutal/rules
+// brutal_rules.c: destination rules and /proc/net/tcp_brutal_canary/rules
 void brutal_apply_rule(struct sock *sk, struct brutal *brutal);
 int brutal_rules_init(void);
 void brutal_rules_exit(void);
 
-// brutal_ports.c: local TCP service ports and /proc/net/tcp_brutal/ports
+// brutal_ports.c: local TCP service ports and /proc/net/tcp_brutal_canary/ports
 struct proc_dir_entry;
 void brutal_apply_port(struct sock *sk, struct brutal *brutal);
 int brutal_ports_init(struct proc_dir_entry *dir);

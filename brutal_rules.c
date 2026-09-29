@@ -1,4 +1,4 @@
-// Destination rules: /proc/net/tcp_brutal/rules
+// Destination rules: /proc/net/tcp_brutal_canary/rules
 //
 // Every connection to a rule's prefix joins the rule's group, without
 // application support. The route must select brutal for the prefix
@@ -275,11 +275,11 @@ static const struct proc_ops brutal_rules_proc_ops = {
 
 int brutal_rules_init(void)
 {
-    struct proc_dir_entry *dir = proc_mkdir("tcp_brutal", init_net.proc_net);
+    struct proc_dir_entry *dir = proc_mkdir(BRUTAL_PROC_DIR, init_net.proc_net);
 
     if (!dir || !proc_create("rules", 0600, dir, &brutal_rules_proc_ops) || brutal_ports_init(dir))
     {
-        remove_proc_subtree("tcp_brutal", init_net.proc_net);
+        remove_proc_subtree(BRUTAL_PROC_DIR, init_net.proc_net);
         return -ENOMEM;
     }
     return 0;
@@ -287,7 +287,7 @@ int brutal_rules_init(void)
 
 void brutal_rules_exit(void)
 {
-    remove_proc_subtree("tcp_brutal", init_net.proc_net);
+    remove_proc_subtree(BRUTAL_PROC_DIR, init_net.proc_net);
     brutal_ports_exit();
     brutal_rules_flush();
 }
