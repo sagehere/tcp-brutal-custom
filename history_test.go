@@ -161,7 +161,7 @@ func TestABHistoryEpochsAndReport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]bool{"manifest.json": false, "epochs.csv": false, "cohort_samples.csv": false, "selector_samples.csv": false, "summary.csv": false, "comparison.csv": false, "statistical_analysis.json": false, "analysis_plan.json": false, "analysis_rules.json": false}
+	want := map[string]bool{"manifest.json": false, "epochs.csv": false, "cohort_samples.csv": false, "selector_samples.csv": false, "summary.csv": false, "comparison.csv": false, "statistical_analysis.json": false, "rollout_history.json": false, "analysis_plan.json": false, "analysis_rules.json": false}
 	for _, zf := range zr.File {
 		if _, ok := want[zf.Name]; ok {
 			want[zf.Name] = true
@@ -189,7 +189,7 @@ func TestABHistoryEpochsAndReport(t *testing.T) {
 	}
 }
 
-func TestABSchemaV1MigratesToV2(t *testing.T) {
+func TestABSchemaV1MigratesToV3(t *testing.T) {
 	dir := t.TempDir()
 	h, err := openHistoryAt(dir)
 	if err != nil {
@@ -198,8 +198,10 @@ func TestABSchemaV1MigratesToV2(t *testing.T) {
 	if _, err = h.db.Exec("UPDATE ab_meta SET value='1' WHERE key='schema_version'"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = h.db.Exec("DROP TABLE ab_epoch_plans"); err != nil {
-		t.Fatal(err)
+	for _, table := range []string{"ab_epoch_plans", "ab_rollouts", "ab_rollout_stages", "ab_rollout_events"} {
+		if _, err = h.db.Exec("DROP TABLE " + table); err != nil {
+			t.Fatal(err)
+		}
 	}
 	h.close()
 	h, err = openHistoryAt(dir)
@@ -211,11 +213,13 @@ func TestABSchemaV1MigratesToV2(t *testing.T) {
 	if err = h.db.QueryRow("SELECT value FROM ab_meta WHERE key='schema_version'").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != "2" {
+	if version != "3" {
 		t.Fatalf("schema version=%q", version)
 	}
-	if _, err = h.db.Exec("SELECT 1 FROM ab_epoch_plans LIMIT 1"); err != nil {
-		t.Fatalf("plan table missing: %v", err)
+	for _, table := range []string{"ab_epoch_plans", "ab_rollouts", "ab_rollout_stages", "ab_rollout_events"} {
+		if _, err = h.db.Exec("SELECT 1 FROM " + table + " LIMIT 1"); err != nil {
+			t.Fatalf("table %s missing: %v", table, err)
+		}
 	}
 }
 
@@ -249,5 +253,126 @@ func TestABComparisonReadinessAcceptsHealthyEpoch(t *testing.T) {
 	got := buildABComparisons(rows, policy)
 	if len(got) != 1 || !got[0].NetworkReady || !got[0].ApplicationReady {
 		t.Fatalf("healthy epoch not ready: %+v", got)
+	}
+}
+func TestABRolloutLifecyclePersistence(t *testing.T) {
+	dir := t.TempDir()
+	h, err := openHistoryAt(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.close()
+
+	plan := defaultABExperimentPlan()
+	p := abPortConfig{
+		Port: 443, RateMbps: 100, Gain: 20, CanaryPercent: 5, Enabled: true,
+		AnalysisPlan: &plan,
+		RolloutPlan:  &abRolloutPlan{Stages: []uint8{5, 10, 25, 50, 100}, ObservationWindowSeconds: 3600},
+	}
+	epoch1, err := h.beginABEpoch(p, "test_rollout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rollout, err := h.beginABRollout(p, epoch1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rollout.Status != "active" || rollout.CurrentStageIndex != 0 || rollout.CurrentEpochID != epoch1 {
+		t.Fatalf("initial rollout=%+v", rollout)
+	}
+	stage1, err := h.abRolloutStage(rollout.CurrentStageID)
+	if err != nil || stage1 == nil || stage1.CanaryPercent != 5 || stage1.ObservationEnds-stage1.Started != 3600 {
+		t.Fatalf("initial stage=%+v err=%v", stage1, err)
+	}
+	if err = h.closeABRolloutStage(stage1.ID, "eligible_review", "test_advance"); err != nil {
+		t.Fatal(err)
+	}
+	p.CanaryPercent = 10
+	epoch2, err := h.beginABEpoch(p, "test_advance")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stage2, err := h.startABRolloutStage(rollout, 1, 10, epoch2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = h.addABRolloutEvent(rollout.ID, p.Port, "advance", 5, 10, epoch2, "test"); err != nil {
+		t.Fatal(err)
+	}
+	current, err := h.activeABRollout(p.Port)
+	if err != nil || current == nil || current.CurrentStageIndex != 1 || current.CurrentStageID != stage2.ID {
+		t.Fatalf("current rollout=%+v err=%v", current, err)
+	}
+	events, err := h.abRolloutEvents(rollout.ID)
+	if err != nil || len(events) < 2 || events[0].Action != "advance" {
+		t.Fatalf("events=%+v err=%v", events, err)
+	}
+	archives, err := h.abRolloutArchives(p.Port, time.Now().Unix()-3600, time.Now().Unix()+3600)
+	if err != nil || len(archives) != 1 || len(archives[0].Stages) != 2 || len(archives[0].Events) < 2 {
+		t.Fatalf("rollout archives=%+v err=%v", archives, err)
+	}
+	if err = h.setABRolloutStatus(rollout.ID, "completed", true); err != nil {
+		t.Fatal(err)
+	}
+	if active, err := h.activeABRollout(p.Port); err != nil || active != nil {
+		t.Fatalf("active after completion=%+v err=%v", active, err)
+	}
+}
+
+func TestABRolloutPlanAllowsPauseAndLaterStageConfig(t *testing.T) {
+	plan := &abRolloutPlan{Stages: []uint8{5, 10, 25, 50, 100}, ObservationWindowSeconds: 3600}
+	if _, err := effectiveABRolloutPlan(plan, 0); err != nil {
+		t.Fatalf("paused 0%% config rejected: %v", err)
+	}
+	if _, err := effectiveABRolloutPlan(plan, 25); err != nil {
+		t.Fatalf("later-stage config rejected: %v", err)
+	}
+	if _, err := effectiveABRolloutPlan(plan, 30); err == nil {
+		t.Fatal("percentage outside rollout stages was accepted")
+	}
+}
+
+func TestABSchemaV2MigratesToV3PreservingAnalysisPlans(t *testing.T) {
+	dir := t.TempDir()
+	h, err := openHistoryAt(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	analysis := defaultABExperimentPlan()
+	p := abPortConfig{Port: 7443, RateMbps: 100, Gain: 20, CanaryPercent: 50, Enabled: true, AnalysisPlan: &analysis}
+	epochID, err := h.beginABEpoch(p, "v2_migration_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.db.Exec("UPDATE ab_meta SET value='2' WHERE key='schema_version'"); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"ab_rollouts", "ab_rollout_stages", "ab_rollout_events"} {
+		if _, err = h.db.Exec("DROP TABLE " + table); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.close()
+
+	h, err = openHistoryAt(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.close()
+	var version string
+	if err = h.db.QueryRow("SELECT value FROM ab_meta WHERE key='schema_version'").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != "3" {
+		t.Fatalf("schema version=%q", version)
+	}
+	plans, err := h.abPlans(p.Port, time.Now().Unix()-3600, time.Now().Unix()+3600)
+	if err != nil || !plans[epochID].Predeclared {
+		t.Fatalf("analysis plan lost during v2->v3 migration: %+v err=%v", plans[epochID], err)
+	}
+	for _, table := range []string{"ab_rollouts", "ab_rollout_stages", "ab_rollout_events"} {
+		if _, err = h.db.Exec("SELECT 1 FROM " + table + " LIMIT 1"); err != nil {
+			t.Fatalf("rollout table %s missing after migration: %v", table, err)
+		}
 	}
 }
