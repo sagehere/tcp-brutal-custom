@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,9 +12,47 @@ import (
 	"time"
 )
 
+type abRolloutStages []uint8
+
+func (s abRolloutStages) MarshalJSON() ([]byte, error) {
+	values := make([]int, len(s))
+	for i, v := range s {
+		values[i] = int(v)
+	}
+	return json.Marshal(values)
+}
+
+func (s *abRolloutStages) UnmarshalJSON(data []byte) error {
+	if len(data) > 0 && data[0] == '"' {
+		var encoded string
+		if err := json.Unmarshal(data, &encoded); err != nil {
+			return err
+		}
+		raw, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			return err
+		}
+		*s = append((*s)[:0], raw...)
+		return nil
+	}
+	var values []int
+	if err := json.Unmarshal(data, &values); err != nil {
+		return err
+	}
+	out := make(abRolloutStages, len(values))
+	for i, v := range values {
+		if v < 0 || v > 255 {
+			return fmt.Errorf("invalid rollout stage %d", v)
+		}
+		out[i] = uint8(v)
+	}
+	*s = out
+	return nil
+}
+
 type abRolloutPlan struct {
-	Stages                   []uint8 `json:"stages"`
-	ObservationWindowSeconds uint64  `json:"observation_window_seconds"`
+	Stages                   abRolloutStages `json:"stages"`
+	ObservationWindowSeconds uint64          `json:"observation_window_seconds"`
 }
 
 func defaultABRolloutPlan(initial uint8) *abRolloutPlan {
@@ -62,16 +101,16 @@ func effectiveABRolloutPlan(in *abRolloutPlan, initial uint8) (*abRolloutPlan, e
 }
 
 type abRollout struct {
-	ID                       int64   `json:"id"`
-	Port                     uint16  `json:"port"`
-	Created                  int64   `json:"created"`
-	Ended                    int64   `json:"ended,omitempty"`
-	Status                   string  `json:"status"`
-	Stages                   []uint8 `json:"stages"`
-	ObservationWindowSeconds uint64  `json:"observation_window_seconds"`
-	CurrentStageIndex        int     `json:"current_stage_index"`
-	CurrentEpochID           int64   `json:"current_epoch_id,omitempty"`
-	CurrentStageID           int64   `json:"current_stage_id,omitempty"`
+	ID                       int64           `json:"id"`
+	Port                     uint16          `json:"port"`
+	Created                  int64           `json:"created"`
+	Ended                    int64           `json:"ended,omitempty"`
+	Status                   string          `json:"status"`
+	Stages                   abRolloutStages `json:"stages"`
+	ObservationWindowSeconds uint64          `json:"observation_window_seconds"`
+	CurrentStageIndex        int             `json:"current_stage_index"`
+	CurrentEpochID           int64           `json:"current_epoch_id,omitempty"`
+	CurrentStageID           int64           `json:"current_stage_id,omitempty"`
 }
 
 type abRolloutStage struct {
