@@ -40,6 +40,18 @@ func buildABReport(h *history, port uint16, from, to int64, tier string) ([]byte
 	}
 	policy := defaultABAnalysisPolicy()
 	comparisons := buildABComparisons(summaries, policy)
+	minuteSamples := samples
+	if tier != "minute" {
+		minuteSamples, err = h.abSamples("minute", port, from, to)
+		if err != nil {
+			return nil, err
+		}
+	}
+	epochPlans, err := h.abPlans(port, from, to)
+	if err != nil {
+		return nil, err
+	}
+	statisticalAnalysis := buildABEpochAnalyses(epochs, summaries, comparisons, minuteSamples, epochPlans)
 	appSamples, err := h.abAppSamples(tier, port, from, to)
 	if err != nil {
 		return nil, err
@@ -208,6 +220,15 @@ func buildABReport(h *history, port uint16, from, to int64, tier string) ([]byte
 		return nil, err
 	}
 	if err = writeFile("comparison.csv", b); err != nil {
+		zw.Close()
+		return nil, err
+	}
+	statistical, _ := json.MarshalIndent(map[string]any{
+		"version":      1,
+		"generated_at": time.Now().UTC().Format(time.RFC3339),
+		"analyses":     statisticalAnalysis,
+	}, "", "  ")
+	if err = writeFile("statistical_analysis.json", statistical); err != nil {
 		zw.Close()
 		return nil, err
 	}
