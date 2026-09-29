@@ -682,8 +682,12 @@ func (m *manager) api(w http.ResponseWriter, r *http.Request) {
 		m.putAB(w, r)
 	case (r.Method == "PUT" || r.Method == "DELETE") && strings.HasPrefix(r.URL.Path, "/api/v1/ab/"):
 		m.changeAB(w, r)
+	case r.Method == "GET" && r.URL.Path == "/api/v1/ab/ports":
+		m.abPortsAPI(w, r)
 	case r.Method == "GET" && r.URL.Path == "/api/v1/ab/summary":
 		m.abSummaryAPI(w, r)
+	case r.Method == "GET" && r.URL.Path == "/api/v1/ab/series":
+		m.abSeriesAPI(w, r)
 	case r.Method == "GET" && r.URL.Path == "/api/v1/ab/report":
 		m.abReportAPI(w, r)
 	case r.Method == "POST" && r.URL.Path == "/api/v1/ab/app-metrics":
@@ -959,6 +963,15 @@ func abRange(r *http.Request) (uint16, int64, int64, error) {
 	return uint16(pv), from, to, nil
 }
 
+func (m *manager) abPortsAPI(w http.ResponseWriter, r *http.Request) {
+	ports, err := m.history.abPorts()
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	jsonReply(w, 200, map[string]any{"ports": ports})
+}
+
 func (m *manager) abSummaryAPI(w http.ResponseWriter, r *http.Request) {
 	port, from, to, err := abRange(r)
 	if err != nil {
@@ -978,6 +991,37 @@ func (m *manager) abSummaryAPI(w http.ResponseWriter, r *http.Request) {
 	policy := defaultABAnalysisPolicy()
 	comparisons := buildABComparisons(rows, policy)
 	jsonReply(w, 200, map[string]any{"port": port, "from": from, "to": to, "epochs": epochs, "summaries": rows, "analysis_policy": policy, "comparisons": comparisons})
+}
+
+func (m *manager) abSeriesAPI(w http.ResponseWriter, r *http.Request) {
+	port, from, to, err := abRange(r)
+	if err != nil {
+		bad(w, 400, err)
+		return
+	}
+	tier := r.URL.Query().Get("tier")
+	if tier == "" {
+		tier = "minute"
+	}
+	samples, err := m.history.abSamples(tier, port, from, to)
+	if err != nil {
+		bad(w, 400, err)
+		return
+	}
+	selectors, err := m.history.abSelectorSamples(tier, port, from, to)
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	app, err := m.history.abAppSamples(tier, port, from, to)
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	jsonReply(w, 200, map[string]any{
+		"port": port, "from": from, "to": to, "tier": tier,
+		"samples": samples, "selectors": selectors, "app_samples": app,
+	})
 }
 
 func (m *manager) abReportAPI(w http.ResponseWriter, r *http.Request) {
