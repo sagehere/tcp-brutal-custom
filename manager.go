@@ -120,7 +120,7 @@ func managerMode() error {
 			if _, err = m.history.ensureABEpoch(p, "manager_restart"); err != nil {
 				return fmt.Errorf("restore A/B epoch %d: %w", p.Port, err)
 			}
-			if err = m.seedABNow(p.Port); err != nil {
+			if err = m.seedABNow(p); err != nil {
 				return fmt.Errorf("restore A/B checkpoint %d: %w", p.Port, err)
 			}
 		}
@@ -197,12 +197,37 @@ func parsePortsAt(path string) ([]portState, error) {
 func parsePorts() ([]portState, error) { return parsePortsAt(portsPath) }
 
 func findPortState(states []portState, port uint16) (portState, bool) {
+	var fallback portState
+	found := false
 	for _, p := range states {
-		if p.Port == port {
+		if p.Port != port {
+			continue
+		}
+		if p.Active {
 			return p, true
 		}
+		if !found {
+			fallback = p
+			found = true
+		}
 	}
-	return portState{}, false
+	return fallback, found
+}
+
+func abCohortStates(cfg abPortConfig, baselineStates, canaryStates []portState) (portState, portState, error) {
+	base, bok := findPortState(baselineStates, cfg.Port)
+	canary, cok := findPortState(canaryStates, cfg.Port)
+	if !bok && cfg.CanaryPercent == 100 {
+		base, bok = portState{Port: cfg.Port}, true
+	}
+	if !cok && cfg.CanaryPercent == 0 {
+		canary, cok = portState{Port: cfg.Port}, true
+	}
+	if !bok || !cok {
+		return portState{}, portState{}, fmt.Errorf("missing A/B cohort state baseline=%v canary=%v", bok, cok)
+	}
+	base.Port, canary.Port = cfg.Port, cfg.Port
+	return base, canary, nil
 }
 
 func writePort(command string) error {
@@ -325,7 +350,7 @@ func (m *manager) applyABPort(p abPortConfig) error {
 	return nil
 }
 
-func (m *manager) seedABNow(port uint16) error {
+func (m *manager) seedABNow(cfg abPortConfig) error {
 	baselineStates, err := parsePortsAt(baselinePortsPath)
 	if err != nil {
 		return err
@@ -334,17 +359,15 @@ func (m *manager) seedABNow(port uint16) error {
 	if err != nil {
 		return err
 	}
-	base, bok := findPortState(baselineStates, port)
-	canary, cok := findPortState(canaryStates, port)
-	if !bok || !cok {
-		return fmt.Errorf("missing A/B cohort state baseline=%v canary=%v", bok, cok)
-	}
-	c, err := m.selector.Count(port)
+	base, canary, err := abCohortStates(cfg, baselineStates, canaryStates)
 	if err != nil {
 		return err
 	}
-	base.Port, canary.Port = port, port
-	return m.history.seedAB(port, base, canary, c)
+	c, err := m.selector.Count(cfg.Port)
+	if err != nil {
+		return err
+	}
+	return m.history.seedAB(cfg.Port, base, canary, c)
 }
 
 func (m *manager) disableABPort(port uint16) error {
@@ -442,13 +465,11 @@ func (m *manager) collect(ctx context.Context) {
 						continue
 					}
 				}
-				base, bok := findPortState(baselineStates, cfg.Port)
-				canary, cok := findPortState(canaryStates, cfg.Port)
-				if !bok || !cok {
-					log.Printf("A/B sample port %d missing cohort state baseline=%v canary=%v", cfg.Port, bok, cok)
+				base, canary, stateErr := abCohortStates(cfg, baselineStates, canaryStates)
+				if stateErr != nil {
+					log.Printf("A/B sample port %d: %v", cfg.Port, stateErr)
 					continue
 				}
-				base.Port, canary.Port = cfg.Port, cfg.Port
 				c, e := m.selector.Count(cfg.Port)
 				if e != nil {
 					log.Printf("A/B selector %d: %v", cfg.Port, e)
@@ -839,7 +860,7 @@ func (m *manager) putAB(w http.ResponseWriter, r *http.Request) {
 	m.cfg = next
 	if _, err := m.history.beginABEpoch(p, "ab_add"); err != nil {
 		log.Printf("A/B epoch start %d: %v", p.Port, err)
-	} else if err := m.seedABNow(p.Port); err != nil {
+	} else if err := m.seedABNow(p); err != nil {
 		log.Printf("A/B epoch seed %d: %v", p.Port, err)
 	}
 	m.history.addEvent("ab_add", p)
@@ -911,7 +932,7 @@ func (m *manager) changeAB(w http.ResponseWriter, r *http.Request) {
 	m.cfg = next
 	if _, err := m.history.beginABEpoch(next.ABPorts[idx], "percentage_change"); err != nil {
 		log.Printf("A/B epoch change %d: %v", port, err)
-	} else if err := m.seedABNow(port); err != nil {
+	} else if err := m.seedABNow(next.ABPorts[idx]); err != nil {
 		log.Printf("A/B epoch seed %d: %v", port, err)
 	}
 	m.history.addEvent("ab_percent", map[string]any{"port": port, "before": previous.CanaryPercent, "after": in.CanaryPercent})
