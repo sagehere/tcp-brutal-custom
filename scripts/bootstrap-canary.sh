@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 repo_url="${TCP_BRUTAL_CANARY_REPO:-https://github.com/sagehere/tcp-brutal-custom.git}"
-ref="${TCP_BRUTAL_CANARY_REF:-feature/canary-ab-reporting}"
+ref="${TCP_BRUTAL_CANARY_REF:-release/canary-v2.1.9-adaptive}"
 web_port="${TCP_BRUTAL_CANARY_WEB_PORT:-23334}"
 keep_source="${TCP_BRUTAL_CANARY_KEEP_SOURCE:-0}"
 
