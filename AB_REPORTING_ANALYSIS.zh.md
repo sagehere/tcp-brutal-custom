@@ -129,7 +129,10 @@ readiness **不是胜负判断**，只回答“这段实验数据是否足够可
 
 样本量不同的两组不能直接比总吞吐。报表提供 `goodput_per_member_mbps` 作为归一化诊断，但仍要求随机分流正常且并发量足够。
 
-## 7. 将来的统计分析方法
+## 7. 统计分析方法
+
+Step 5 已把本节的基础计算实现到 `/api/v1/ab/analysis`、Dashboard 和导出包中的 `statistical_analysis.json`。具体实现、预声明 Guardrail、样本量目标与阶段复核状态见 `AB_STATISTICAL_ANALYSIS.zh.md`。
+
 
 ### 应用成功率
 
