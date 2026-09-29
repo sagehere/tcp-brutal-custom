@@ -52,6 +52,7 @@ type abPortConfig struct {
 	CanaryPercent uint8             `json:"canary_percent"`
 	Enabled       bool              `json:"enabled"`
 	AnalysisPlan  *abExperimentPlan `json:"analysis_plan,omitempty"`
+	RolloutPlan   *abRolloutPlan    `json:"rollout_plan,omitempty"`
 }
 
 type config struct {
@@ -84,6 +85,11 @@ func loadConfig() (config, error) {
 			return c, fmt.Errorf("invalid A/B analysis plan for port %d: %w", c.ABPorts[i].Port, e)
 		}
 		c.ABPorts[i].AnalysisPlan = &plan
+		rollout, e := effectiveABRolloutPlan(c.ABPorts[i].RolloutPlan, c.ABPorts[i].CanaryPercent)
+		if e != nil {
+			return c, fmt.Errorf("invalid A/B rollout plan for port %d: %w", c.ABPorts[i].Port, e)
+		}
+		c.ABPorts[i].RolloutPlan = rollout
 	}
 	return c, nil
 }
@@ -469,6 +475,25 @@ func runCLI(args []string) error {
 			return localRequest("POST", "/api/v1/ports", strings.NewReader(string(b)))
 		}
 	case "ab":
+		if len(args) >= 3 && args[1] == "rollout" {
+			port, e := strconv.ParseUint(args[2], 10, 16)
+			if e != nil || port == 0 {
+				return errors.New("invalid port")
+			}
+			if len(args) == 3 {
+				return localRequest("GET", fmt.Sprintf("/api/v1/ab/rollout?port=%d", port), nil)
+			}
+			if len(args) == 4 {
+				action := args[3]
+				switch action {
+				case "pause", "resume", "rollback", "retry", "advance", "complete":
+				default:
+					return errors.New("invalid rollout action")
+				}
+				return localRequest("POST", fmt.Sprintf("/api/v1/ab/rollout/%d/%s", port, action), strings.NewReader("{}"))
+			}
+			return errors.New("usage: tbc2-canary ab rollout PORT [pause|resume|rollback|retry|advance|complete]")
+		}
 		if len(args) >= 3 && args[1] == "analysis" {
 			port, e := strconv.ParseUint(args[2], 10, 16)
 			if e != nil || port == 0 {
@@ -558,6 +583,7 @@ func runCLI(args []string) error {
 			}
 			gain := uint32(20)
 			plan := defaultABExperimentPlan()
+			rollout := defaultABRolloutPlan(uint8(percent))
 			for _, opt := range args[5:] {
 				parts := strings.SplitN(opt, "=", 2)
 				if len(parts) != 2 {
@@ -588,6 +614,29 @@ func runCLI(args []string) error {
 					plan.Alpha, e = strconv.ParseFloat(parts[1], 64)
 				case "power":
 					plan.Power, e = strconv.ParseFloat(parts[1], 64)
+				case "stages":
+					if rollout == nil {
+						rollout = &abRolloutPlan{ObservationWindowSeconds: 3600}
+					}
+					rollout.Stages = nil
+					for _, raw := range strings.Split(parts[1], ",") {
+						v, parseErr := strconv.ParseUint(strings.TrimSpace(raw), 10, 8)
+						if parseErr != nil || v == 0 || v > 100 {
+							return errors.New("invalid rollout stages")
+						}
+						rollout.Stages = append(rollout.Stages, uint8(v))
+					}
+				case "window":
+					if rollout == nil {
+						rollout = &abRolloutPlan{Stages: []uint8{uint8(percent)}}
+					}
+					rollout.ObservationWindowSeconds, e = strconv.ParseUint(parts[1], 10, 64)
+				case "orchestrate":
+					if parts[1] == "off" || parts[1] == "0" || parts[1] == "false" {
+						rollout = nil
+					} else if parts[1] != "on" && parts[1] != "1" && parts[1] != "true" {
+						return errors.New("orchestrate must be on or off")
+					}
 				default:
 					return fmt.Errorf("unknown A/B option %q", parts[0])
 				}
@@ -598,7 +647,16 @@ func runCLI(args []string) error {
 			if _, e = effectiveABExperimentPlan(&plan); e != nil {
 				return e
 			}
-			b, _ := json.Marshal(abPortConfig{Port: uint16(port), RateMbps: rate, Gain: gain, CanaryPercent: uint8(percent), Enabled: true, AnalysisPlan: &plan})
+			if rollout != nil {
+				rollout, e = effectiveABRolloutPlan(rollout, uint8(percent))
+				if e != nil {
+					return e
+				}
+				if rollout.Stages[0] != uint8(percent) {
+					return errors.New("first rollout stage must equal initial canary percentage")
+				}
+			}
+			b, _ := json.Marshal(abPortConfig{Port: uint16(port), RateMbps: rate, Gain: gain, CanaryPercent: uint8(percent), Enabled: true, AnalysisPlan: &plan, RolloutPlan: rollout})
 			return localRequest("POST", "/api/v1/ab", strings.NewReader(string(b)))
 		}
 	case "password":
@@ -645,7 +703,7 @@ func runCLI(args []string) error {
 			return localRequest("PUT", "/api/v1/autostart", strings.NewReader(string(b)))
 		}
 	}
-	return errors.New("usage: tbc2-canary [status|ports|port add ...|ab list|ab add PORT Mbps PERCENT [gain=N success=PCT ni=PP retrans=PP rtt=PCT goodput=PCT block=MIN alpha=A power=P]|ab set PORT PERCENT|ab del PORT|ab summary PORT [FROM TO]|ab analysis PORT [FROM TO]|ab export PORT FILE [FROM TO]|password ...]")
+	return errors.New("usage: tbc2-canary [status|ports|port add ...|ab list|ab add PORT Mbps PERCENT [gain=N success=PCT ni=PP retrans=PP rtt=PCT goodput=PCT block=MIN alpha=A power=P stages=5,10,25,50,100 window=SECONDS orchestrate=on|off]|ab rollout PORT [pause|resume|rollback|retry|advance|complete]|ab set PORT PERCENT|ab del PORT|ab summary PORT [FROM TO]|ab analysis PORT [FROM TO]|ab export PORT FILE [FROM TO]|password ...]")
 }
 
 func panelManagementMenu() error {
