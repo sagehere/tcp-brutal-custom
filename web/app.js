@@ -1,6 +1,7 @@
 let csrf = sessionStorage.getItem('csrf') || '';
 let current = null;
 let settingsDirty = false;
+let abState = {experiments:[], ports:[], summary:null, series:null, selectedEpoch:0};
 const el = id => document.getElementById(id);
 const mb = n => (Number(n || 0) / 1e6).toFixed(1) + ' MB';
 const message = (value, error = false) => { el('notice').textContent = value; el('notice').classList.toggle('error', error); };
@@ -37,6 +38,7 @@ function view(id) {
   const title = document.querySelector(`[data-view="${id}"]`).textContent;
   el('crumb').textContent = el('pageTitle').textContent = title;
   if (id === 'historyView') draw().catch(e => message(e.message, true));
+  if (id === 'abView') refreshAB().catch(e => message(e.message, true));
   if (id === 'settingsView') loadAutostart().catch(e => message(e.message, true));
 }
 document.querySelectorAll('[data-view]').forEach(x => x.onclick = () => view(x.dataset.view));
@@ -187,6 +189,267 @@ async function draw() {
   el('chartNote').textContent = kind==='send' ? `发送速率峰值 ${peak.toFixed(2)} Mbps` : kind==='retrans' ? `重传率峰值 ${peak.toFixed(2)}%` : `RTT 峰值 ${peak.toFixed(1)} ms`;
 }
 
+
+const abNumber = (value, digits = 2) => Number(value || 0).toFixed(digits);
+const abDuration = seconds => {
+  seconds = Number(seconds || 0);
+  if (seconds >= 86400) return (seconds / 86400).toFixed(seconds % 86400 ? 1 : 0) + ' 天';
+  if (seconds >= 3600) return (seconds / 3600).toFixed(seconds % 3600 ? 1 : 0) + ' 小时';
+  if (seconds >= 60) return Math.floor(seconds / 60) + ' 分钟';
+  return seconds + ' 秒';
+};
+const abTime = value => value ? new Date(Number(value) * 1000).toLocaleString() : '进行中';
+function abMetricCard(label, value, detail) {
+  const d = document.createElement('div'); d.className = 'card metric';
+  const a = document.createElement('span'), b = document.createElement('strong'), c = document.createElement('small');
+  a.textContent = label; b.textContent = value; c.textContent = detail;
+  d.append(a,b,c); return d;
+}
+function abWindow() {
+  const seconds = Number(el('abRange').value || 86400);
+  const to = Math.floor(Date.now()/1000), from = to - seconds;
+  const tier = seconds <= 21600 ? 'raw' : seconds <= 7*86400 ? 'minute' : 'hour';
+  return {seconds, from, to, tier};
+}
+function abReasonZH(reason) {
+  if (reason === 'epoch is not a two-cohort comparison') return '该 epoch 为 0% 或 100%，不是双组同时对照';
+  if (reason === 'selector failure rate exceeds policy') return 'Selector 失败率超过预设门槛';
+  if (reason === 'no assigned connections') return '尚无已分配的新连接';
+  if (reason === 'gap samples present') return '存在数据缺口样本';
+  let m = reason.match(/^duration (\d+)s < (\d+)s$/);
+  if (m) return '运行时间 ' + abDuration(m[1]) + '，低于门槛 ' + abDuration(m[2]);
+  m = reason.match(/^baseline connections (\d+) < (\d+)$/);
+  if (m) return 'Baseline 新连接 ' + m[1] + '，低于门槛 ' + m[2];
+  m = reason.match(/^canary connections (\d+) < (\d+)$/);
+  if (m) return 'Canary 新连接 ' + m[1] + '，低于门槛 ' + m[2];
+  m = reason.match(/^allocation \|z\| ([\d.]+) > ([\d.]+)$/);
+  if (m) return '实际分流偏差 |z|=' + m[1] + '，超过门槛 ' + m[2];
+  m = reason.match(/^baseline app requests (\d+) < (\d+)$/);
+  if (m) return 'Baseline 应用请求 ' + m[1] + '，低于门槛 ' + m[2];
+  m = reason.match(/^canary app requests (\d+) < (\d+)$/);
+  if (m) return 'Canary 应用请求 ' + m[1] + '，低于门槛 ' + m[2];
+  return reason;
+}
+function abMetaLine(label, value) {
+  const row = document.createElement('div'); row.className = 'row spread';
+  const a = document.createElement('span'), b = document.createElement('strong');
+  a.className = 'muted'; a.textContent = label; b.textContent = value;
+  row.append(a,b); return row;
+}
+function renderABExperiments() {
+  const box = el('abExperiments'); box.replaceChildren();
+  if (!abState.experiments.length) {
+    const p = document.createElement('div'); p.className = 'ab-empty'; p.textContent = '当前没有运行中的 A/B 实验；历史数据仍可从上方端口选择查看。';
+    box.append(p); return;
+  }
+  for (const x of abState.experiments) {
+    const card = document.createElement('div'); card.className = 'ab-exp';
+    const head = document.createElement('div'); head.className = 'row spread';
+    const title = document.createElement('strong'); title.textContent = '端口 ' + x.port;
+    const target = document.createElement('span'); target.className = 'pill'; target.textContent = 'Canary ' + x.canary_percent + '%';
+    head.append(title,target);
+    const total = Number(x.selector?.baseline || 0) + Number(x.selector?.canary || 0);
+    const actual = total ? 100 * Number(x.selector.canary || 0) / total : 0;
+    const meta = document.createElement('div'); meta.className = 'ab-meta';
+    const values = [
+      ['目标速率', Number(x.rate_mbps).toFixed(1) + ' Mbps'],
+      ['实际分流', total ? actual.toFixed(1) + '%' : '无样本'],
+      ['Baseline 新连接', String(x.selector?.baseline || 0)],
+      ['Canary 新连接', String(x.selector?.canary || 0)],
+      ['Selector 失败', String(x.selector?.failure || 0)],
+      ['CWND gain', String(x.gain)]
+    ];
+    for (const pair of values) {
+      const span=document.createElement('span'), b=document.createElement('b');
+      span.textContent=pair[0]+' '; b.textContent=pair[1]; span.append(b); meta.append(span);
+    }
+    const actions=document.createElement('div'); actions.className='ab-actions';
+    const label=document.createElement('label'); label.className='field'; label.textContent='调整 Canary %';
+    const select=document.createElement('select');
+    const choices=[0,5,10,25,50,100,Number(x.canary_percent)].filter((v,i,a)=>a.indexOf(v)===i).sort((a,b)=>a-b);
+    for (const pct of choices) select.add(new Option(pct+'%',String(pct)));
+    select.value=String(x.canary_percent); label.append(select);
+    const apply=button('应用比例','secondary',()=>changeABPercent(x.port,select,apply));
+    const del=button('删除实验','danger',()=>removeABExperiment(x.port,del));
+    actions.append(label,apply,del);
+    card.append(head,meta,actions); box.append(card);
+  }
+}
+async function changeABPercent(port, select, control) {
+  await busy(control, async () => {
+    await api('/api/v1/ab/' + port, 'PUT', {canary_percent:Number(select.value)});
+    message('端口 ' + port + ' 的 Canary 比例已更新；只影响新连接');
+    await refreshAB();
+  });
+}
+async function removeABExperiment(port, control) {
+  if (!confirm('删除 A/B 实验端口 ' + port + '？已有连接会自然结束。')) return;
+  await busy(control, async () => {
+    await api('/api/v1/ab/' + port, 'DELETE');
+    message('A/B 实验已删除，历史 epoch 数据仍保留');
+    await refreshAB();
+  });
+}
+function renderABReadiness(c, policy) {
+  const box=el('abReadiness'); box.replaceChildren();
+  if (!c) { box.textContent='当前 epoch 尚无可汇总的 cohort 样本'; return; }
+  const states=document.createElement('div'); states.className='row';
+  const network=document.createElement('span'); network.className='ab-state' + (c.network_ready?'':' wait');
+  network.textContent=c.network_ready?'网络数据可分析':'网络数据继续采集';
+  const app=document.createElement('span'); app.className='ab-state' + (c.application_ready?'':' wait');
+  app.textContent=c.application_ready?'应用数据可分析':'应用数据继续采集';
+  states.append(network,app); box.append(states);
+  const threshold=document.createElement('p'); threshold.className='hint';
+  threshold.textContent='门槛：≥'+abDuration(policy?.min_duration_seconds||1800)+'、每组 ≥'+(policy?.min_connections_per_cohort||200)+' 新连接、Selector 失败 ≤'+(policy?.max_selector_failure_percent||0.1)+'%、|z| ≤'+(policy?.max_allocation_abs_z||4)+'；应用层每组 ≥'+(policy?.min_app_requests_per_cohort||1000)+' 请求。';
+  box.append(threshold);
+  if (c.reasons?.length) {
+    const ul=document.createElement('ul'); ul.className='reason-list';
+    for (const reason of c.reasons) { const li=document.createElement('li'); li.textContent=abReasonZH(reason); ul.append(li); }
+    box.append(ul);
+  } else {
+    const p=document.createElement('p'); p.className='ab-note'; p.textContent='当前数据通过预设完整性门槛；这仍不是性能优劣结论。';
+    box.append(p);
+  }
+}
+function abAddCompareRow(label, base, canary, delta) {
+  const row=el('abComparison').insertRow();
+  cell(row,label); cell(row,base); cell(row,canary);
+  const d=cell(row,delta); d.className='delta';
+}
+function renderABComparison(c) {
+  el('abComparison').replaceChildren();
+  if (!c) {
+    const row=el('abComparison').insertRow(), td=row.insertCell(); td.colSpan=4; td.className='empty'; td.textContent='该 epoch 尚无成对样本';
+    return;
+  }
+  const signed=(n,d=2,suffix='') => (Number(n)>=0?'+':'')+Number(n||0).toFixed(d)+suffix;
+  abAddCompareRow('重传率',abNumber(c.baseline_retrans_percent,3)+'%',abNumber(c.canary_retrans_percent,3)+'%',signed(c.retrans_delta_pp,3,' pp'));
+  abAddCompareRow('平均 RTT',abNumber(c.baseline_mean_rtt_ms,3)+' ms',abNumber(c.canary_mean_rtt_ms,3)+' ms',signed(c.mean_rtt_delta_percent,2,'%'));
+  abAddCompareRow('归一有效吞吐',abNumber(c.baseline_goodput_per_member_mbps,3)+' Mbps',abNumber(c.canary_goodput_per_member_mbps,3)+' Mbps',signed(c.goodput_per_member_delta_percent,2,'%'));
+  const haveApp=Number(c.baseline_app_requests||0)+Number(c.canary_app_requests||0)>0;
+  abAddCompareRow('应用成功率',haveApp?abNumber(c.baseline_app_success_percent,3)+'%':'—',haveApp?abNumber(c.canary_app_success_percent,3)+'%':'—',haveApp?signed(c.app_success_delta_pp,3,' pp'):'—');
+  const haveLatency=Number(c.baseline_app_mean_latency_ms||0)>0 || Number(c.canary_app_mean_latency_ms||0)>0;
+  abAddCompareRow('应用平均延迟',haveLatency?abNumber(c.baseline_app_mean_latency_ms,3)+' ms':'—',haveLatency?abNumber(c.canary_app_mean_latency_ms,3)+' ms':'—',haveLatency?signed(c.app_mean_latency_delta_percent,2,'%'):'—');
+}
+function renderABEpochs() {
+  const tbody=el('abEpochs'); tbody.replaceChildren();
+  const epochs=[...(abState.summary?.epochs||[])].reverse();
+  const comps=abState.summary?.comparisons||[];
+  if (!epochs.length) {
+    const row=tbody.insertRow(), td=row.insertCell(); td.colSpan=6; td.className='empty'; td.textContent='所选时间范围内没有 epoch';
+    return;
+  }
+  for (const epoch of epochs) {
+    const c=comps.find(x=>Number(x.epoch_id)===Number(epoch.id));
+    const row=tbody.insertRow(); row.className='epoch-row'+(Number(epoch.id)===Number(abState.selectedEpoch)?' selected':'');
+    cell(row,'#'+epoch.id); cell(row,epoch.canary_percent+'%'); cell(row,abTime(epoch.started)); cell(row,epoch.ended?abTime(epoch.ended):'进行中'); cell(row,epoch.code_version);
+    cell(row,c?(c.network_ready?'数据可分析':(epoch.canary_percent===0||epoch.canary_percent===100?'非双组对照':'采集中')):'无汇总样本');
+    row.onclick=()=>{abState.selectedEpoch=epoch.id; renderABAnalysis();};
+  }
+}
+function renderABChart() {
+  document.querySelectorAll('#abChart .series').forEach(x=>x.remove());
+  const kind=el('abMetric').value, epoch=Number(abState.selectedEpoch);
+  const data=abState.series;
+  if (!data || !epoch) { el('abChartNote').textContent='暂无趋势数据'; return; }
+  const bins=new Map();
+  if (kind==='appSuccess' || kind==='appLatency') {
+    for (const x of data.app_samples||[]) {
+      if (Number(x.epoch_id)!==epoch) continue;
+      const key=x.time+'|'+x.cohort, b=bins.get(key)||{time:x.time,cohort:x.cohort,requests:0,success:0,latency:0,latencySamples:0,gap:false};
+      b.requests+=Number(x.requests||0); b.success+=Number(x.success||0); b.latency+=Number(x.latency_sum_us||0); b.latencySamples+=Number(x.latency_samples||0); bins.set(key,b);
+    }
+  } else {
+    for (const x of data.samples||[]) {
+      if (Number(x.epoch_id)!==epoch) continue;
+      const key=x.time+'|'+x.cohort, b=bins.get(key)||{time:x.time,cohort:x.cohort,sent:0,acked:0,retrans:0,rtt:0,rttSamples:0,memberSeconds:0,gap:false};
+      b.sent+=Number(x.sent||0); b.acked+=Number(x.acked||0); b.retrans+=Number(x.retrans||0); b.rtt+=Number(x.rtt_sum_us||0); b.rttSamples+=Number(x.rtt_samples||0); b.memberSeconds+=Number(x.member_seconds||0); b.gap ||= !!x.gap; bins.set(key,b);
+    }
+  }
+  const label={retrans:['重传率','%'],rtt:['平均 RTT',' ms'],goodput:['归一有效吞吐',' Mbps'],appSuccess:['应用成功率','%'],appLatency:['应用平均延迟',' ms']}[kind];
+  const values=[...bins.values()].map(x=>{
+    let value=NaN;
+    if (kind==='retrans') value=x.sent?100*x.retrans/x.sent:NaN;
+    if (kind==='rtt') value=x.rttSamples?x.rtt/x.rttSamples/1000:NaN;
+    if (kind==='goodput') value=x.memberSeconds?x.acked*8/x.memberSeconds/1e6:NaN;
+    if (kind==='appSuccess') value=x.requests?100*x.success/x.requests:NaN;
+    if (kind==='appLatency') value=x.latencySamples?x.latency/x.latencySamples/1000:NaN;
+    return {...x,value};
+  }).filter(x=>Number.isFinite(x.value)).sort((a,b)=>a.time-b.time);
+  const baseline=values.filter(x=>x.cohort==='baseline'), canary=values.filter(x=>x.cohort==='canary');
+  el('abChartTitle').textContent=label[0]+' · epoch #'+epoch+' · '+data.tier+' 粒度';
+  if (!values.length) { el('abChartNote').textContent='该 epoch 暂无 '+label[0]+' 时序样本'; return; }
+  const peak=Math.max(0,...values.map(x=>x.value)), scale=Math.max(1,peak);
+  const minTime=Math.min(...values.map(x=>x.time)), maxTime=Math.max(...values.map(x=>x.time)), span=Math.max(1,maxTime-minTime);
+  for (const [points,className] of [[baseline,'baseline'],[canary,'canary']]) {
+    for (const part of seriesSegments(points,'value',scale,minTime,span)) {
+      const poly=document.createElementNS('http://www.w3.org/2000/svg','polyline');
+      poly.setAttribute('class','series '+className);
+      poly.setAttribute('points',part.length===1?part[0]+' '+part[0]:part.join(' '));
+      el('abChart').append(poly);
+    }
+  }
+  el('abChartNote').textContent='峰值 '+peak.toFixed(kind==='rtt'||kind==='appLatency'?2:3)+label[1]+' · Baseline '+baseline.length+' 点 / Canary '+canary.length+' 点；gap 区间不会被折线跨接。';
+}
+function renderABAnalysis() {
+  const summary=abState.summary, epochs=summary?.epochs||[], comps=summary?.comparisons||[];
+  if (!epochs.length) {
+    el('abAnalysis').hidden=true; el('abNoData').hidden=false; return;
+  }
+  if (!epochs.some(x=>Number(x.id)===Number(abState.selectedEpoch))) abState.selectedEpoch=epochs.at(-1).id;
+  const epoch=epochs.find(x=>Number(x.id)===Number(abState.selectedEpoch));
+  const c=comps.find(x=>Number(x.epoch_id)===Number(abState.selectedEpoch));
+  el('abNoData').hidden=true; el('abAnalysis').hidden=false;
+  const headline=el('abHeadline'); headline.replaceChildren();
+  if (c) {
+    headline.append(
+      abMetricCard('目标 Canary',c.canary_percent+'%','epoch #'+c.epoch_id),
+      abMetricCard('实际 Canary',abNumber(c.actual_canary_percent,1)+'%',signedAllocation(c.allocation_error_pp)),
+      abMetricCard('新连接分配',c.baseline_connections+' / '+c.canary_connections,'Baseline / Canary'),
+      abMetricCard('Selector 失败',String(c.selector_failures),'当前 epoch 汇总'),
+      abMetricCard('采样时长',abDuration(c.duration_seconds),c.network_ready?'达到网络门槛':'仍在采集')
+    );
+  } else {
+    headline.append(abMetricCard('Epoch','#'+epoch.id,epoch.canary_percent+'% Canary'),abMetricCard('汇总状态','等待样本','采集到 minute 数据后生成对比'));
+  }
+  renderABReadiness(c,summary?.analysis_policy||{});
+  const meta=el('abEpochMeta'); meta.replaceChildren();
+  meta.append(abMetaLine('Epoch','#'+epoch.id),abMetaLine('Canary 目标',epoch.canary_percent+'%'),abMetaLine('开始',abTime(epoch.started)),abMetaLine('结束',epoch.ended?abTime(epoch.ended):'进行中'),abMetaLine('目标速率',Number(epoch.rate_mbps).toFixed(1)+' Mbps'),abMetaLine('CWND gain',String(epoch.gain)),abMetaLine('代码版本',epoch.code_version),abMetaLine('边界原因',epoch.reason));
+  renderABComparison(c); renderABEpochs(); renderABChart();
+}
+function signedAllocation(value) {
+  const n=Number(value||0);
+  return '目标偏差 '+(n>=0?'+':'')+n.toFixed(2)+' pp';
+}
+async function refreshAB() {
+  const selected=el('abPort').value;
+  const expResp=await api('/api/v1/ab'), portResp=await api('/api/v1/ab/ports');
+  abState.experiments=await expResp.json();
+  const historyPorts=(await portResp.json()).ports||[];
+  abState.ports=[...new Set([...historyPorts,...abState.experiments.map(x=>x.port)])].sort((a,b)=>a-b);
+  renderABExperiments();
+  el('abPort').replaceChildren();
+  for (const port of abState.ports) el('abPort').add(new Option(String(port),String(port)));
+  if (selected && abState.ports.map(String).includes(selected)) el('abPort').value=selected;
+  if (!abState.ports.length) {
+    abState.summary=null; abState.series=null; el('abAnalysis').hidden=true; el('abNoData').hidden=false; return;
+  }
+  const port=Number(el('abPort').value), w=abWindow();
+  const query='port='+port+'&from='+w.from+'&to='+w.to;
+  const summaryResp=await api('/api/v1/ab/summary?'+query);
+  const seriesResp=await api('/api/v1/ab/series?'+query+'&tier='+w.tier);
+  abState.summary=await summaryResp.json(); abState.series=await seriesResp.json();
+  renderABAnalysis();
+}
+async function downloadABReport(control) {
+  if (!el('abPort').value) { message('没有可导出的实验端口',true); return; }
+  await busy(control,async()=>{
+    const port=Number(el('abPort').value), w=abWindow();
+    const r=await api('/api/v1/ab/report?port='+port+'&from='+w.from+'&to='+w.to+'&tier='+w.tier);
+    const blob=await r.blob(),a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='brutal-ab-port-'+port+'.zip'; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+  });
+}
+
 async function loadAutostart() {
   el('autostartStatus').textContent = '正在读取状态…';
   try {
@@ -216,4 +479,14 @@ async function download(format,button){await busy(button,async()=>{const r=await
 el('exportCSV').onclick=()=>download('csv',el('exportCSV'));
 el('exportJSON').onclick=()=>download('json',el('exportJSON'));
 el('checkUpdate').onclick=()=>busy(el('checkUpdate'),async()=>{const x=await(await api('/api/v1/update/check')).json();el('releaseNotes').textContent=`当前 ${x.installed}；最新 ${x.latest}\n${x.notes}`;});
+
+el('addAB').onclick=()=>{el('abForm').reset();el('abNewGain').value='20';el('abNewPercent').value='5';el('abDialog').showModal();};
+el('closeAB').onclick=()=>el('abDialog').close();
+el('abForm').onsubmit=async e=>{e.preventDefault();await busy(e.submitter,async()=>{const body={port:Number(el('abNewPort').value),rate_mbps:Number(el('abNewRate').value),gain:Number(el('abNewGain').value),canary_percent:Number(el('abNewPercent').value)};await api('/api/v1/ab','POST',body);el('abDialog').close();message('A/B 实验已创建');await refreshAB();});};
+el('refreshAB').onclick=()=>busy(el('refreshAB'),async()=>{await refreshAB();message('A/B 实验数据已刷新');});
+el('abPort').onchange=()=>refreshAB().catch(e=>message(e.message,true));
+el('abRange').onchange=()=>refreshAB().catch(e=>message(e.message,true));
+el('abMetric').onchange=()=>renderABChart();
+el('exportABReport').onclick=()=>downloadABReport(el('exportABReport'));
+
 if (csrf) refresh().catch(()=>logout('会话已失效，请重新登录'));
