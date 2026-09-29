@@ -148,6 +148,10 @@ func TestABHistoryEpochsAndReport(t *testing.T) {
 	if err != nil || len(ports) != 1 || ports[0] != 443 {
 		t.Fatalf("A/B ports=%v err=%v", ports, err)
 	}
+	plans, err := h.abPlans(443, from, to)
+	if err != nil || !plans[epoch1].Predeclared || plans[epoch1].Plan.BootstrapBlockMinutes != 5 {
+		t.Fatalf("A/B epoch plan=%+v err=%v", plans[epoch1], err)
+	}
 
 	report, err := buildABReport(h, 443, from, to, "minute")
 	if err != nil {
@@ -157,7 +161,7 @@ func TestABHistoryEpochsAndReport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]bool{"manifest.json": false, "epochs.csv": false, "cohort_samples.csv": false, "selector_samples.csv": false, "summary.csv": false, "comparison.csv": false, "analysis_plan.json": false, "analysis_rules.json": false}
+	want := map[string]bool{"manifest.json": false, "epochs.csv": false, "cohort_samples.csv": false, "selector_samples.csv": false, "summary.csv": false, "comparison.csv": false, "statistical_analysis.json": false, "analysis_plan.json": false, "analysis_rules.json": false}
 	for _, zf := range zr.File {
 		if _, ok := want[zf.Name]; ok {
 			want[zf.Name] = true
@@ -182,6 +186,36 @@ func TestABHistoryEpochsAndReport(t *testing.T) {
 		if !ok {
 			t.Fatalf("report missing %s", name)
 		}
+	}
+}
+
+func TestABSchemaV1MigratesToV2(t *testing.T) {
+	dir := t.TempDir()
+	h, err := openHistoryAt(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.db.Exec("UPDATE ab_meta SET value='1' WHERE key='schema_version'"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.db.Exec("DROP TABLE ab_epoch_plans"); err != nil {
+		t.Fatal(err)
+	}
+	h.close()
+	h, err = openHistoryAt(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.close()
+	var version string
+	if err = h.db.QueryRow("SELECT value FROM ab_meta WHERE key='schema_version'").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != "2" {
+		t.Fatalf("schema version=%q", version)
+	}
+	if _, err = h.db.Exec("SELECT 1 FROM ab_epoch_plans LIMIT 1"); err != nil {
+		t.Fatalf("plan table missing: %v", err)
 	}
 }
 
