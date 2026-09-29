@@ -686,6 +686,8 @@ func (m *manager) api(w http.ResponseWriter, r *http.Request) {
 		m.abPortsAPI(w, r)
 	case r.Method == "GET" && r.URL.Path == "/api/v1/ab/summary":
 		m.abSummaryAPI(w, r)
+	case r.Method == "GET" && r.URL.Path == "/api/v1/ab/analysis":
+		m.abAnalysisAPI(w, r)
 	case r.Method == "GET" && r.URL.Path == "/api/v1/ab/series":
 		m.abSeriesAPI(w, r)
 	case r.Method == "GET" && r.URL.Path == "/api/v1/ab/report":
@@ -841,6 +843,12 @@ func (m *manager) putAB(w http.ResponseWriter, r *http.Request) {
 	if p.Gain == 0 {
 		p.Gain = 20
 	}
+	plan, err := effectiveABExperimentPlan(p.AnalysisPlan)
+	if err != nil {
+		bad(w, 400, err)
+		return
+	}
+	p.AnalysisPlan = &plan
 	p.Enabled = true
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -991,6 +999,41 @@ func (m *manager) abSummaryAPI(w http.ResponseWriter, r *http.Request) {
 	policy := defaultABAnalysisPolicy()
 	comparisons := buildABComparisons(rows, policy)
 	jsonReply(w, 200, map[string]any{"port": port, "from": from, "to": to, "epochs": epochs, "summaries": rows, "analysis_policy": policy, "comparisons": comparisons})
+}
+
+func (m *manager) abAnalysisAPI(w http.ResponseWriter, r *http.Request) {
+	port, from, to, err := abRange(r)
+	if err != nil {
+		bad(w, 400, err)
+		return
+	}
+	summaries, err := m.history.abSummaries(port, from, to)
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	epochs, err := m.history.abEpochs(port, from, to)
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	samples, err := m.history.abSamples("minute", port, from, to)
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	plans, err := m.history.abPlans(port, from, to)
+	if err != nil {
+		bad(w, 500, err)
+		return
+	}
+	policy := defaultABAnalysisPolicy()
+	comparisons := buildABComparisons(summaries, policy)
+	analyses := buildABEpochAnalyses(epochs, summaries, comparisons, samples, plans)
+	jsonReply(w, 200, map[string]any{
+		"port": port, "from": from, "to": to,
+		"analysis_policy": policy, "analyses": analyses,
+	})
 }
 
 func (m *manager) abSeriesAPI(w http.ResponseWriter, r *http.Request) {
