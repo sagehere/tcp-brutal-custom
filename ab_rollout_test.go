@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -164,5 +166,24 @@ func TestABRolloutReconcileRestartsWindowForNewEpoch(t *testing.T) {
 	events, err := h.abRolloutEvents(rollout.ID)
 	if err != nil || len(events) < 2 || events[0].Action != "restart_window" {
 		t.Fatalf("events=%+v err=%v", events, err)
+	}
+}
+
+func TestABRolloutStagesJSONUsesNumberArrayAndReadsLegacyBase64(t *testing.T) {
+	plan := abRolloutPlan{Stages: abRolloutStages{50, 100}, ObservationWindowSeconds: 60}
+	b, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "\"stages\":[50,100]") || strings.Contains(string(b), "MmQ=") {
+		t.Fatalf("rollout stages encoded incorrectly: %s", b)
+	}
+
+	var legacy abRolloutPlan
+	if err = json.Unmarshal([]byte("{\"stages\":\"MmQ=\",\"observation_window_seconds\":60}"), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if len(legacy.Stages) != 2 || legacy.Stages[0] != 50 || legacy.Stages[1] != 100 {
+		t.Fatalf("legacy rollout stages=%v", legacy.Stages)
 	}
 }
