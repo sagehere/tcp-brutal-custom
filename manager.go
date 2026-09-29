@@ -117,8 +117,12 @@ func managerMode() error {
 			if err = m.applyABPort(p); err != nil {
 				return fmt.Errorf("restore A/B port %d: %w", p.Port, err)
 			}
-			if _, err = m.history.ensureABEpoch(p, "manager_restart"); err != nil {
-				return fmt.Errorf("restore A/B epoch %d: %w", p.Port, err)
+			epochID, e := m.history.ensureABEpoch(p, "manager_restart")
+			if e != nil {
+				return fmt.Errorf("restore A/B epoch %d: %w", p.Port, e)
+			}
+			if err = m.history.reconcileABRollout(p, epochID); err != nil {
+				return fmt.Errorf("restore A/B rollout %d: %w", p.Port, err)
 			}
 			if err = m.seedABNow(p); err != nil {
 				return fmt.Errorf("restore A/B checkpoint %d: %w", p.Port, err)
@@ -688,6 +692,10 @@ func (m *manager) api(w http.ResponseWriter, r *http.Request) {
 		m.abSummaryAPI(w, r)
 	case r.Method == "GET" && r.URL.Path == "/api/v1/ab/analysis":
 		m.abAnalysisAPI(w, r)
+	case r.Method == "GET" && r.URL.Path == "/api/v1/ab/rollout":
+		m.abRolloutAPI(w, r)
+	case r.Method == "POST" && strings.HasPrefix(r.URL.Path, "/api/v1/ab/rollout/"):
+		m.abRolloutActionAPI(w, r)
 	case r.Method == "GET" && r.URL.Path == "/api/v1/ab/series":
 		m.abSeriesAPI(w, r)
 	case r.Method == "GET" && r.URL.Path == "/api/v1/ab/report":
@@ -849,6 +857,16 @@ func (m *manager) putAB(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.AnalysisPlan = &plan
+	rollout, err := effectiveABRolloutPlan(p.RolloutPlan, p.CanaryPercent)
+	if err != nil {
+		bad(w, 400, err)
+		return
+	}
+	if rollout != nil && rollout.Stages[0] != p.CanaryPercent {
+		bad(w, 400, errors.New("first rollout stage must equal the initial canary percentage"))
+		return
+	}
+	p.RolloutPlan = rollout
 	p.Enabled = true
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -862,17 +880,34 @@ func (m *manager) putAB(w http.ResponseWriter, r *http.Request) {
 		bad(w, 500, err)
 		return
 	}
-	next := m.cfg
-	next.ABPorts = append(append([]abPortConfig(nil), m.cfg.ABPorts...), p)
+	previousCfg := m.cfg
+	next := previousCfg
+	next.ABPorts = append(append([]abPortConfig(nil), previousCfg.ABPorts...), p)
 	if err := saveConfig(next); err != nil {
 		_ = m.disableABPort(p.Port)
 		bad(w, 500, err)
 		return
 	}
 	m.cfg = next
-	if _, err := m.history.beginABEpoch(p, "ab_add"); err != nil {
-		log.Printf("A/B epoch start %d: %v", p.Port, err)
-	} else if err := m.seedABNow(p); err != nil {
+	epochID, err := m.history.beginABEpoch(p, "ab_add")
+	if err != nil {
+		_ = m.disableABPort(p.Port)
+		_ = saveConfig(previousCfg)
+		m.cfg = previousCfg
+		bad(w, 500, err)
+		return
+	}
+	if p.RolloutPlan != nil {
+		if _, err = m.history.beginABRollout(p, epochID); err != nil {
+			_ = m.history.closeABEpoch(p.Port, "rollout_create_failed")
+			_ = m.disableABPort(p.Port)
+			_ = saveConfig(previousCfg)
+			m.cfg = previousCfg
+			bad(w, 500, err)
+			return
+		}
+	}
+	if err := m.seedABNow(p); err != nil {
 		log.Printf("A/B epoch seed %d: %v", p.Port, err)
 	}
 	m.history.addEvent("ab_add", p)
@@ -918,6 +953,11 @@ func (m *manager) changeAB(w http.ResponseWriter, r *http.Request) {
 		if err := m.history.closeABEpoch(port, "ab_delete"); err != nil {
 			log.Printf("A/B epoch close %d: %v", port, err)
 		}
+		if rollout, e := m.history.activeABRollout(port); e == nil && rollout != nil {
+			_ = m.history.closeABRolloutStage(rollout.CurrentStageID, "stopped", "ab_delete")
+			_ = m.history.setABRolloutStatus(rollout.ID, "stopped", true)
+			_ = m.history.addABRolloutEvent(rollout.ID, port, "stop", previous.CanaryPercent, previous.CanaryPercent, rollout.CurrentEpochID, "A/B experiment deleted")
+		}
 		m.history.addEvent("ab_delete", previous)
 		jsonReply(w, 200, map[string]any{"deleted": port})
 		return
@@ -927,6 +967,10 @@ func (m *manager) changeAB(w http.ResponseWriter, r *http.Request) {
 	}
 	if err = decode(r, &in); err != nil || in.CanaryPercent > 100 {
 		bad(w, 400, errors.New("invalid canary percentage"))
+		return
+	}
+	if previous.RolloutPlan != nil {
+		bad(w, 409, errors.New("managed rollout percentage cannot be changed directly; use rollout actions"))
 		return
 	}
 	next := m.cfg
