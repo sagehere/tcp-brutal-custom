@@ -1,6 +1,6 @@
 # A/B Statistical Analysis and Stage Review (Step 5)
 
-Step 5 implements reproducible statistical calculations and predeclared rollout guardrails on top of the Stage 3 reporting contract and Step 4 Dashboard.
+Step 5 implements reproducible statistical calculations and predeclared rollout guardrails on top of the Stage 3 reporting contract and Step 4 Dashboard. Step 6 wraps stage changes in fixed observation windows and a persisted manual lifecycle; see `AB_ROLLOUT_ORCHESTRATION.md`.
 
 The system does **not** automatically increase Canary traffic. It only computes review states; any move to the next percentage still requires an explicit user action.
 
