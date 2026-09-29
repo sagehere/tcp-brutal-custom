@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 )
 
 func containsAction(actions []string, want string) bool {
@@ -39,13 +40,15 @@ func safetyTestFixture(t *testing.T) (*history, *manager, abPortConfig, int64, i
 		h.close()
 		t.Fatal(err)
 	}
-	var started int64
-	if err = h.db.QueryRow("SELECT started_ts FROM ab_epochs WHERE id=?", epochID).Scan(&started); err != nil {
+	started := time.Now().Unix() - 20
+	started = started - started%10 + 5
+	if _, err = h.db.Exec("UPDATE ab_epochs SET started_ts=? WHERE id=?", started, epochID); err != nil {
 		h.close()
 		t.Fatal(err)
 	}
-	ts := started
-	now := started + 1
+	// Deliberately store the first raw bucket before the exact epoch start.
+	ts := started - started%10
+	now := time.Now().Unix()
 	_, err = h.db.Exec("INSERT INTO ab_samples(tier,ts,epoch_id,port,cohort,group_id,duration_sec,member_seconds,sent,acked,retrans,members,rtt_sum,rtt_samples,rtt_max,gap) VALUES"+
 		"('raw',?,?,?,?,1,10,10,1000000,990000,10000,10,1000000,100,12000,0),"+
 		"('raw',?,?,?,?,2,10,10,1000000,960000,40000,10,2000000,100,24000,0)",
