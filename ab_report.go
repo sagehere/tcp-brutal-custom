@@ -56,6 +56,10 @@ func buildABReport(h *history, port uint16, from, to int64, tier string) ([]byte
 	if err != nil {
 		return nil, err
 	}
+	rolloutArchives, err := h.abRolloutArchives(port, from, to)
+	if err != nil {
+		return nil, err
+	}
 
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
@@ -229,6 +233,15 @@ func buildABReport(h *history, port uint16, from, to int64, tier string) ([]byte
 		"analyses":     statisticalAnalysis,
 	}, "", "  ")
 	if err = writeFile("statistical_analysis.json", statistical); err != nil {
+		zw.Close()
+		return nil, err
+	}
+	rolloutHistory, _ := json.MarshalIndent(map[string]any{
+		"version":      1,
+		"generated_at": time.Now().UTC().Format(time.RFC3339),
+		"rollouts":     rolloutArchives,
+	}, "", "  ")
+	if err = writeFile("rollout_history.json", rolloutHistory); err != nil {
 		zw.Close()
 		return nil, err
 	}
