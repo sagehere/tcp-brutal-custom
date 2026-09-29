@@ -1,7 +1,7 @@
 let csrf = sessionStorage.getItem('csrf') || '';
 let current = null;
 let settingsDirty = false;
-let abState = {experiments:[], ports:[], summary:null, series:null, selectedEpoch:0};
+let abState = {experiments:[], ports:[], summary:null, series:null, statistics:null, selectedEpoch:0};
 const el = id => document.getElementById(id);
 const mb = n => (Number(n || 0) / 1e6).toFixed(1) + ' MB';
 const message = (value, error = false) => { el('notice').textContent = value; el('notice').classList.toggle('error', error); };
@@ -216,6 +216,14 @@ function abReasonZH(reason) {
   if (reason === 'selector failure rate exceeds policy') return 'Selector 失败率超过预设门槛';
   if (reason === 'no assigned connections') return '尚无已分配的新连接';
   if (reason === 'gap samples present') return '存在数据缺口样本';
+  if (reason === 'analysis plan was not predeclared for this epoch') return '该历史 epoch 没有在开始前固化统计计划，只能回看，不能进入阶段复核';
+  if (reason === 'network readiness requirements are not yet met') return '网络数据完整性门槛尚未满足';
+  if (reason.startsWith('paired minute samples are insufficient')) return '用于 block bootstrap 的成对 minute 样本还不够';
+  if (reason === 'one or more network confidence intervals cross a predeclared guardrail') return '至少一项网络指标置信区间跨过预设 Guardrail，需要人工复核';
+  if (reason === 'application metrics are not available') return '没有应用层指标，只能进行网络层复核';
+  if (reason === 'application readiness or precomputed sample target is not yet met') return '应用层完整性或预计算样本量目标尚未满足';
+  if (reason === 'application success non-inferiority confidence interval crosses the predeclared margin') return '应用成功率非劣区间跨过预设界限，需要人工复核';
+  if (reason === 'predeclared data-quality, sample-size, and guardrail checks are satisfied') return '数据质量、样本量和预设 Guardrail 均满足，可人工复核下一档';
   let m = reason.match(/^duration (\d+)s < (\d+)s$/);
   if (m) return '运行时间 ' + abDuration(m[1]) + '，低于门槛 ' + abDuration(m[2]);
   m = reason.match(/^baseline connections (\d+) < (\d+)$/);
@@ -257,7 +265,9 @@ function renderABExperiments() {
       ['Baseline 新连接', String(x.selector?.baseline || 0)],
       ['Canary 新连接', String(x.selector?.canary || 0)],
       ['Selector 失败', String(x.selector?.failure || 0)],
-      ['CWND gain', String(x.gain)]
+      ['CWND gain', String(x.gain)],
+      ['App 非劣界限', x.analysis_plan ? '-'+Number(x.analysis_plan.app_success_ni_margin_pp).toFixed(2)+' pp' : '默认'],
+      ['Bootstrap', x.analysis_plan ? x.analysis_plan.bootstrap_block_minutes+' 分钟' : '默认']
     ];
     for (const pair of values) {
       const span=document.createElement('span'), b=document.createElement('b');
@@ -311,6 +321,81 @@ function renderABReadiness(c, policy) {
     box.append(p);
   }
 }
+function abCIText(ci, digits = 2, suffix = '') {
+  if (!ci?.available) return '样本不足';
+  return Number(ci.estimate).toFixed(digits)+' ['+Number(ci.lower).toFixed(digits)+', '+Number(ci.upper).toFixed(digits)+']'+suffix;
+}
+function abDecisionBox(label, value, detail='') {
+  const d=document.createElement('div'); d.className='decision-box';
+  const a=document.createElement('span'), b=document.createElement('strong');
+  a.textContent=label; b.textContent=value; d.append(a,b);
+  if (detail) { const c=document.createElement('div'); c.className='hint'; c.textContent=detail; d.append(c); }
+  return d;
+}
+function abDecisionState(state) {
+  return {
+    collecting:['继续采集','wait'],
+    guardrail_review:['Guardrail 人工复核','bad'],
+    eligible_review:['满足预设条件 · 可人工复核下一档',''],
+    network_review_only:['仅网络层可复核','info'],
+    not_comparable:['非双组对照','info']
+  }[state] || [state || '等待分析','wait'];
+}
+async function advanceABStage(port, percent, control) {
+  if (!confirm('将端口 '+port+' 的 Canary 比例调整到 '+percent+'%？只影响之后建立的新连接，不会自动断开现有连接。')) return;
+  await busy(control, async()=>{
+    await api('/api/v1/ab/'+port,'PUT',{canary_percent:Number(percent)});
+    message('已人工确认进入 '+percent+'% 阶段；新的 epoch 已创建');
+    await refreshAB();
+  });
+}
+function renderABDecision() {
+  const box=el('abDecision'); box.replaceChildren();
+  const analyses=abState.statistics?.analyses||[];
+  const a=analyses.find(x=>Number(x.epoch_id)===Number(abState.selectedEpoch));
+  if (!a) {
+    const p=document.createElement('p'); p.className='muted'; p.textContent='当前 epoch 尚无统计分析结果';
+    box.append(p); return;
+  }
+  const state=abDecisionState(a.state);
+  const top=document.createElement('div'); top.className='row spread';
+  const badge=document.createElement('span'); badge.className='ab-state '+state[1]; badge.textContent=state[0];
+  const planFlag=document.createElement('span'); planFlag.className='hint';
+  planFlag.textContent=a.plan_predeclared?'统计计划已在 epoch 开始前固化':'历史 epoch：统计计划未预先固化';
+  top.append(badge,planFlag); box.append(top);
+
+  const c=(abState.summary?.comparisons||[]).find(x=>Number(x.epoch_id)===Number(a.epoch_id));
+  const grid=document.createElement('div'); grid.className='decision-grid';
+  const app=a.application||{}, net=a.network||{}, plan=a.plan||{};
+  grid.append(
+    abDecisionBox('应用成功率差 · 95% CI',abCIText(app.difference_pp,3,' pp'),'非劣界限 ≥ -'+Number(plan.app_success_ni_margin_pp||0).toFixed(2)+' pp'),
+    abDecisionBox('重传差 · Block Bootstrap CI',abCIText(net.retrans_delta_pp,3,' pp'),'上界需 ≤ +'+Number(plan.max_retrans_delta_pp||0).toFixed(2)+' pp'),
+    abDecisionBox('RTT 相对变化 · Bootstrap CI',abCIText(net.mean_rtt_delta_percent,2,'%'),'上界需 ≤ +'+Number(plan.max_mean_rtt_delta_percent||0).toFixed(1)+'%'),
+    abDecisionBox('Goodput 相对变化 · Bootstrap CI',abCIText(net.goodput_per_member_delta_percent,2,'%'),'下界需 ≥ '+Number(plan.min_goodput_delta_percent||0).toFixed(1)+'%'),
+    abDecisionBox('应用样本量目标',app.sample_target?.available?(app.sample_target.baseline+' / '+app.sample_target.canary):'不适用','Baseline / Canary；当前 '+(c?.baseline_app_requests||0)+' / '+(c?.canary_app_requests||0)),
+    abDecisionBox('成对 Minute 样本',String(net.paired_minutes||0),'Block '+(net.block_minutes||plan.bootstrap_block_minutes||0)+' 分钟 · '+(net.replicates||0)+' 次重采样')
+  );
+  box.append(grid);
+
+  const planNote=document.createElement('p'); planNote.className='hint';
+  planNote.textContent='预设：alpha='+Number(plan.alpha||0).toFixed(3)+'，power='+Number(plan.power||0).toFixed(2)+'，预计基线成功率='+Number(plan.expected_app_success_percent||0).toFixed(2)+'%。统计区间用于阶段复核，不进行连续 p-value 自动扩流。';
+  box.append(planNote);
+
+  if (a.reasons?.length) {
+    const ul=document.createElement('ul'); ul.className='reason-list';
+    for (const reason of a.reasons) { const li=document.createElement('li'); li.textContent=abReasonZH(reason); ul.append(li); }
+    box.append(ul);
+  }
+  const epoch=(abState.summary?.epochs||[]).find(x=>Number(x.id)===Number(a.epoch_id));
+  const exp=abState.experiments.find(x=>Number(x.port)===Number(a.port));
+  if (a.state==='eligible_review' && a.next_stage_percent && epoch && !epoch.ended && exp && Number(exp.canary_percent)===Number(a.canary_percent)) {
+    const row=document.createElement('div'); row.className='row'; row.style.marginTop='14px';
+    const b=button('人工确认进入 '+a.next_stage_percent+'%','primary',()=>advanceABStage(a.port,a.next_stage_percent,b));
+    const note=document.createElement('span'); note.className='hint'; note.textContent='点击后才会调整；系统不会自动扩流。';
+    row.append(b,note); box.append(row);
+  }
+}
+
 function abAddCompareRow(label, base, canary, delta) {
   const row=el('abComparison').insertRow();
   cell(row,label); cell(row,base); cell(row,canary);
@@ -413,6 +498,7 @@ function renderABAnalysis() {
     headline.append(abMetricCard('Epoch','#'+epoch.id,epoch.canary_percent+'% Canary'),abMetricCard('汇总状态','等待样本','采集到 minute 数据后生成对比'));
   }
   renderABReadiness(c,summary?.analysis_policy||{});
+  renderABDecision();
   const meta=el('abEpochMeta'); meta.replaceChildren();
   meta.append(abMetaLine('Epoch','#'+epoch.id),abMetaLine('Canary 目标',epoch.canary_percent+'%'),abMetaLine('开始',abTime(epoch.started)),abMetaLine('结束',epoch.ended?abTime(epoch.ended):'进行中'),abMetaLine('目标速率',Number(epoch.rate_mbps).toFixed(1)+' Mbps'),abMetaLine('CWND gain',String(epoch.gain)),abMetaLine('代码版本',epoch.code_version),abMetaLine('边界原因',epoch.reason));
   renderABComparison(c); renderABEpochs(); renderABChart();
@@ -432,13 +518,14 @@ async function refreshAB() {
   for (const port of abState.ports) el('abPort').add(new Option(String(port),String(port)));
   if (selected && abState.ports.map(String).includes(selected)) el('abPort').value=selected;
   if (!abState.ports.length) {
-    abState.summary=null; abState.series=null; el('abAnalysis').hidden=true; el('abNoData').hidden=false; return;
+    abState.summary=null; abState.series=null; abState.statistics=null; el('abAnalysis').hidden=true; el('abNoData').hidden=false; return;
   }
   const port=Number(el('abPort').value), w=abWindow();
   const query='port='+port+'&from='+w.from+'&to='+w.to;
   const summaryResp=await api('/api/v1/ab/summary?'+query);
   const seriesResp=await api('/api/v1/ab/series?'+query+'&tier='+w.tier);
-  abState.summary=await summaryResp.json(); abState.series=await seriesResp.json();
+  const analysisResp=await api('/api/v1/ab/analysis?'+query);
+  abState.summary=await summaryResp.json(); abState.series=await seriesResp.json(); abState.statistics=await analysisResp.json();
   renderABAnalysis();
 }
 async function downloadABReport(control) {
@@ -482,7 +569,7 @@ el('checkUpdate').onclick=()=>busy(el('checkUpdate'),async()=>{const x=await(awa
 
 el('addAB').onclick=()=>{el('abForm').reset();el('abNewGain').value='20';el('abNewPercent').value='5';el('abDialog').showModal();};
 el('closeAB').onclick=()=>el('abDialog').close();
-el('abForm').onsubmit=async e=>{e.preventDefault();await busy(e.submitter,async()=>{const body={port:Number(el('abNewPort').value),rate_mbps:Number(el('abNewRate').value),gain:Number(el('abNewGain').value),canary_percent:Number(el('abNewPercent').value)};await api('/api/v1/ab','POST',body);el('abDialog').close();message('A/B 实验已创建');await refreshAB();});};
+el('abForm').onsubmit=async e=>{e.preventDefault();await busy(e.submitter,async()=>{const body={port:Number(el('abNewPort').value),rate_mbps:Number(el('abNewRate').value),gain:Number(el('abNewGain').value),canary_percent:Number(el('abNewPercent').value),analysis_plan:{alpha:Number(el('abPlanAlpha').value),power:Number(el('abPlanPower').value),expected_app_success_percent:Number(el('abPlanSuccess').value),app_success_ni_margin_pp:Number(el('abPlanNI').value),max_retrans_delta_pp:Number(el('abPlanRetrans').value),max_mean_rtt_delta_percent:Number(el('abPlanRTT').value),min_goodput_delta_percent:Number(el('abPlanGoodput').value),bootstrap_block_minutes:Number(el('abPlanBlock').value)}};await api('/api/v1/ab','POST',body);el('abDialog').close();message('A/B 实验已创建，统计计划已固化');await refreshAB();});};
 el('refreshAB').onclick=()=>busy(el('refreshAB'),async()=>{await refreshAB();message('A/B 实验数据已刷新');});
 el('abPort').onchange=()=>refreshAB().catch(e=>message(e.message,true));
 el('abRange').onchange=()=>refreshAB().catch(e=>message(e.message,true));
