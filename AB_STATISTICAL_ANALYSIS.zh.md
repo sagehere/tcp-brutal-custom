@@ -1,6 +1,6 @@
 # A/B 自动统计分析与阶段复核（Step 5）
 
-Step 5 在 Stage 3 数据契约与 Step 4 Dashboard 上增加可重复的统计计算、预声明 Guardrail 与人工阶段复核。
+Step 5 在 Stage 3 数据契约与 Step 4 Dashboard 上增加可重复的统计计算、预声明 Guardrail 与人工阶段复核。Step 6 已进一步把阶段推进放入固定观察窗口编排；具体生命周期、暂停/恢复/回退和审计语义见 `AB_ROLLOUT_ORCHESTRATION.zh.md`。
 
 核心原则：
 
