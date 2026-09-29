@@ -86,7 +86,6 @@ func TestHistoryDeltasAndReset(t *testing.T) {
 	}
 }
 
-
 func TestABHistoryEpochsAndReport(t *testing.T) {
 	dir := t.TempDir()
 	h, err := openHistoryAt(dir)
@@ -145,6 +144,10 @@ func TestABHistoryEpochsAndReport(t *testing.T) {
 	if err != nil || len(epochs) != 2 || epochs[0].Ended == 0 || epochs[1].CanaryPercent != 50 {
 		t.Fatalf("epochs=%+v err=%v", epochs, err)
 	}
+	ports, err := h.abPorts()
+	if err != nil || len(ports) != 1 || ports[0] != 443 {
+		t.Fatalf("A/B ports=%v err=%v", ports, err)
+	}
 
 	report, err := buildABReport(h, 443, from, to, "minute")
 	if err != nil {
@@ -181,7 +184,6 @@ func TestABHistoryEpochsAndReport(t *testing.T) {
 		}
 	}
 }
-
 
 func TestABComparisonReadinessRejectsShortImbalancedEpoch(t *testing.T) {
 	policy := defaultABAnalysisPolicy()
