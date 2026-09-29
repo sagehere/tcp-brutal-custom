@@ -136,6 +136,9 @@ Raw total throughput must not be compared directly when cohort sizes differ. `go
 
 ## 7. Statistical analysis plan
 
+Step 5 implements the baseline calculations from this section in `/api/v1/ab/analysis`, the Dashboard, and `statistical_analysis.json` inside report ZIPs. See `AB_STATISTICAL_ANALYSIS.md` for predeclared guardrails, sample targets, confidence intervals, and manual stage-review states.
+
+
 ### Application success
 
 For each cohort report the success proportion and a Wilson confidence interval. Compare the absolute difference in success rates.
