@@ -18,6 +18,15 @@
 
 ## What this fork adds
 
+The robustness changes add a managed-port compensation cap (`100..125`, default `125`; `100` disables compensation), advisory named egress budgets and authenticated read-only diagnostics. Legacy updates preserve omitted cap/budget settings. History rates now use measured intervals and leave missing/legacy intervals unplotted. See [implementation and compatibility notes](IMPROVEMENTS.zh.md) and the [performance review](PERFORMANCE_REVIEW.zh.md).
+
+```bash
+sudo tbc2 budget set '[{"name":"wan","capacity_mbps":100,"reserve_percent":10}]'
+sudo tbc2 port add 443 70 compensation_cap_percent=110 budget=wan
+sudo tbc2 budgets
+sudo tbc2 diagnose
+```
+
 The main goal is simple: run a normal TCP service on a Debian/Ubuntu VPS and enable Brutal **without modifying the application**.
 
 For example:
@@ -77,7 +86,7 @@ To pin a specific signed release instead of `latest`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sagehere/tcp-brutal-custom/main/scripts/bootstrap.sh | \
-  sudo env TCP_BRUTAL_RELEASE_TAG=v2.1.9 bash
+  sudo env TCP_BRUTAL_RELEASE_TAG=v2.1.10 bash
 ```
 
 > **First-install trust boundary:** the bootstrap itself comes from this GitHub repository. If your threat model includes a full compromise of the repository/account before first installation, independently verify the release-key fingerprint below before granting root privileges. Existing installations pin the key locally, so normal updates do not re-bootstrap trust from GitHub.

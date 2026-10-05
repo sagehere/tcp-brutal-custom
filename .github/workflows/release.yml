@@ -35,6 +35,11 @@ jobs:
       - name: Check source
         run: |
           CGO_ENABLED=0 go test ./...
+          cc -O2 -Wall -Wextra -Werror tools/clock-test.c -o /tmp/brutal-clock-test
+          /tmp/brutal-clock-test
+          node --check web/app.js
+          node tools/web-metrics-test.cjs
+          python3 scripts/review-summarize.py --self-test
           bash -n scripts/*.sh
 
       - name: Build unsigned release bundle

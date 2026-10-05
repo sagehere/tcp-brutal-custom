@@ -12,8 +12,16 @@
 
 #define BRUTAL_VERSION_MAJOR 2
 #define BRUTAL_VERSION_MINOR 1
-#define BRUTAL_VERSION_PATCH 9
+#define BRUTAL_VERSION_PATCH 10
 #define BRUTAL_VERSION ((BRUTAL_VERSION_MAJOR << 16) | (BRUTAL_VERSION_MINOR << 8) | BRUTAL_VERSION_PATCH)
+
+#ifdef BRUTAL_REVIEW
+#define BRUTAL_ALGORITHM "brutal_review"
+#define BRUTAL_PROC_NAME "tcp_brutal_review"
+#else
+#define BRUTAL_ALGORITHM "brutal"
+#define BRUTAL_PROC_NAME "tcp_brutal"
+#endif
 
 #define TCP_BRUTAL_PARAMS 23301  // setsockopt/getsockopt: struct brutal_params
 #define TCP_BRUTAL_VERSION 23302 // getsockopt: u32 (major << 16 | minor << 8 | patch)
@@ -39,7 +47,8 @@ struct brutal_pkt_info
 // Sockets sharing one total rate.
 // Before each transmit, a member reserves the next burst on the group's
 // virtual clock (next_ns) and sets its own EDT (tcp_wstamp_ns) to that slot,
-// so the group never exceeds rate while any single active member can use all of it.
+// so members share one budget while a single active member can use all of it.
+// This controls payload reservations, not a hard physical/wire rate limit.
 struct brutal_group
 {
     struct hlist_node node;
@@ -51,6 +60,7 @@ struct brutal_group
 
     u64 rate;
     u32 cwnd_gain;
+    u32 compensation_cap_percent;
     u8 locked; // rule group: applications may not change the params
     u32 members;
     u64 sent_bytes;
@@ -98,6 +108,7 @@ struct brutal_params
 extern struct tcp_congestion_ops tcp_brutal_ops;
 void brutal_update_rate(struct sock *sk);
 void brutal_stats_flush(struct sock *sk);
+void brutal_group_settle(struct sock *sk);
 
 // brutal_sockopt.c: groups and the application interface
 struct brutal_group *brutal_group_alloc(u64 id);

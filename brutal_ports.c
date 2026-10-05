@@ -70,7 +70,8 @@ static int port_add(char *args)
     struct brutal_port_rule *r;
     struct brutal_group *g;
     char *tok;
-    unsigned int port, gain = INIT_CWND_GAIN;
+    unsigned int port, gain = INIT_CWND_GAIN, cap = 0;
+    bool cap_seen = false;
     u64 rate = 0;
     int ret;
 
@@ -85,13 +86,19 @@ static int port_add(char *args)
             ret = kstrtou64(tok + 5, 10, &rate);
         else if (!strncmp(tok, "gain=", 5))
             ret = kstrtouint(tok + 5, 10, &gain);
+        else if (!strncmp(tok, "compensation_cap_percent=", 25))
+        {
+            cap_seen = true;
+            ret = kstrtouint(tok + 25, 10, &cap);
+        }
         else
             ret = -EINVAL;
         if (ret)
             return -EINVAL;
     }
     if (rate < MIN_PACING_RATE || rate > MAX_PACING_RATE ||
-        gain < MIN_CWND_GAIN || gain > MAX_CWND_GAIN)
+        gain < MIN_CWND_GAIN || gain > MAX_CWND_GAIN ||
+        (cap_seen && (cap < 100 || cap > 125)))
         return -EINVAL;
 
     mutex_lock(&port_mutex);
@@ -102,6 +109,8 @@ static int port_add(char *args)
         {
             WRITE_ONCE(r->group->rate, rate);
             WRITE_ONCE(r->group->cwnd_gain, gain);
+            if (cap)
+                WRITE_ONCE(r->group->compensation_cap_percent, cap);
             mutex_unlock(&port_mutex);
             return 0;
         }
@@ -118,6 +127,7 @@ static int port_add(char *args)
     r->group = g;
     g->rate = rate;
     g->cwnd_gain = gain;
+    g->compensation_cap_percent = cap ?: 125;
     g->locked = 1;
     list_add_tail_rcu(&r->list, &active_ports);
     mutex_unlock(&port_mutex);
@@ -155,12 +165,12 @@ static void show_port(struct seq_file *m, const struct brutal_port_rule *r, bool
 
     seq_printf(m, "port=%u active=%u rate=%llu gain=%u id=%llu members=%u "
                   "sent=%llu acked=%llu retrans=%llu rtt_sum=%llu "
-                  "rtt_samples=%llu rtt_max=%u\n",
+                  "rtt_samples=%llu rtt_max=%u compensation_cap_percent=%u\n",
                r->port, active, READ_ONCE(g->rate), READ_ONCE(g->cwnd_gain),
                g->id, READ_ONCE(g->members), READ_ONCE(g->sent_bytes),
                READ_ONCE(g->acked_bytes), READ_ONCE(g->retrans_bytes),
                READ_ONCE(g->rtt_sum_us), READ_ONCE(g->rtt_samples),
-               READ_ONCE(g->rtt_max_us));
+               READ_ONCE(g->rtt_max_us), READ_ONCE(g->compensation_cap_percent));
 }
 
 static int ports_show(struct seq_file *m, void *v)

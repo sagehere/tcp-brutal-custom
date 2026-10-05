@@ -29,6 +29,7 @@ struct brutal_group *brutal_group_alloc(u64 id)
     g->id = id;
     g->rate = INIT_PACING_RATE;
     g->cwnd_gain = INIT_CWND_GAIN;
+    g->compensation_cap_percent = 125;
     return g;
 }
 
@@ -84,6 +85,7 @@ void brutal_group_leave(struct sock *sk, struct brutal *brutal)
     if (!g)
         return;
     brutal_stats_flush(sk);
+    brutal_group_settle(sk);
     brutal->group = NULL;
     brutal->resv_bytes = 0;
     spin_lock_bh(&g->lock);
@@ -123,6 +125,7 @@ static int brutal_set_params(struct sock *sk, sockptr_t optval, unsigned int opt
         release_sock(sk);
         return -EPERM; // governed by a locked destination rule
     }
+    brutal_group_settle(sk);
     if (!params.group_id)
         brutal_group_leave(sk, brutal);
     else if (!brutal->group || brutal->group->id != params.group_id)
@@ -217,7 +220,7 @@ static int brutal_congestion_locked(struct sock *sk, sockptr_t optval, unsigned 
     release_sock(sk);
     if (!locked)
         return 0;
-    return strcmp(name, "brutal") ? -EPERM : 0;
+    return strcmp(name, BRUTAL_ALGORITHM) ? -EPERM : 0;
 }
 
 static int brutal_tcp_setsockopt(struct sock *sk, int level, int optname, sockptr_t optval, unsigned int optlen)

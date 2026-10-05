@@ -26,30 +26,34 @@ import (
 	"golang.org/x/crypto/argon2"
 )
 
-const (
+var (
 	configDir         = "/etc/tcp-brutal-custom"
 	dataDir           = "/var/lib/tcp-brutal-custom"
 	socketPath        = "/run/tcp-brutal-custom/manager.sock"
 	portsPath         = "/proc/net/tcp_brutal/ports"
 	panelPasswordFile = "/etc/tcp-brutal-custom/panel-password"
+	algorithmName     = "brutal"
 )
 
-var version = "2.1.9-dev"
+var version = "2.1.10-dev"
 
 type portConfig struct {
-	Port     uint16  `json:"port"`
-	RateMbps float64 `json:"rate_mbps"`
-	Gain     uint32  `json:"gain"`
-	Enabled  bool    `json:"enabled"`
+	Port                   uint16  `json:"port"`
+	RateMbps               float64 `json:"rate_mbps"`
+	Gain                   uint32  `json:"gain"`
+	Enabled                bool    `json:"enabled"`
+	CompensationCapPercent uint32  `json:"compensation_cap_percent,omitempty"`
+	Budget                 string  `json:"budget,omitempty"`
 }
 
 type config struct {
-	WebHost      string       `json:"web_host"`
-	WebPort      uint16       `json:"web_port"`
-	AllowedIPs   []string     `json:"allowed_ips"`
-	PasswordSalt string       `json:"password_salt"`
-	PasswordHash string       `json:"password_hash"`
-	Ports        []portConfig `json:"ports"`
+	WebHost      string         `json:"web_host"`
+	WebPort      uint16         `json:"web_port"`
+	AllowedIPs   []string       `json:"allowed_ips"`
+	PasswordSalt string         `json:"password_salt"`
+	PasswordHash string         `json:"password_hash"`
+	Ports        []portConfig   `json:"ports"`
+	Budgets      []budgetConfig `json:"budgets,omitempty"`
 }
 
 func configPath() string { return filepath.Join(configDir, "config.json") }
@@ -59,12 +63,39 @@ func loadConfig() (config, error) {
 	if err != nil {
 		return config{}, err
 	}
+	return parseConfig(b)
+}
+
+// Share the same compatibility and validation rules with backup restore.
+func parseConfig(b []byte) (config, error) {
 	var c config
-	if err = json.Unmarshal(b, &c); err != nil {
+	if err := json.Unmarshal(b, &c); err != nil {
 		return c, err
 	}
 	if c.WebHost == "" || c.WebPort == 0 {
 		return c, errors.New("invalid panel address")
+	}
+	if err := validateBudgets(c.Budgets, c.Ports); err != nil {
+		return c, err
+	}
+	var fields struct {
+		Ports []map[string]json.RawMessage `json:"ports"`
+	}
+	if err := json.Unmarshal(b, &fields); err != nil {
+		return c, err
+	}
+	for i := range c.Ports {
+		if c.Ports[i].CompensationCapPercent == 0 {
+			for name := range fields.Ports[i] {
+				if strings.EqualFold(name, "compensation_cap_percent") {
+					return c, errors.New("compensation cap must be 100..125")
+				}
+			}
+			c.Ports[i].CompensationCapPercent = 125
+		}
+		if err := validatePort(c.Ports[i], c.WebPort); err != nil {
+			return c, err
+		}
 	}
 	return c, nil
 }
@@ -268,7 +299,7 @@ type publicWebConfig struct {
 }
 
 func loadPublicWebConfig() (publicWebConfig, error) {
-	b, err := os.ReadFile("/run/tcp-brutal-custom/panel.json")
+	b, err := os.ReadFile(filepath.Join(filepath.Dir(socketPath), "panel.json"))
 	if err != nil {
 		return publicWebConfig{}, err
 	}
@@ -278,7 +309,7 @@ func loadPublicWebConfig() (publicWebConfig, error) {
 }
 
 func writePublicWebConfig(c config, gid int) error {
-	p := "/run/tcp-brutal-custom/panel.json"
+	p := filepath.Join(filepath.Dir(socketPath), "panel.json")
 	b, err := json.Marshal(publicWebConfig{c.WebHost, c.WebPort, c.AllowedIPs})
 	if err != nil {
 		return err
@@ -351,6 +382,12 @@ func runCLI(args []string) error {
 	if len(args) == 0 {
 		return menu()
 	}
+	if algorithmName != "brutal" {
+		switch args[0] {
+		case "install", "uninstall", "restore", "update", "autostart":
+			return errors.New("system maintenance is disabled in an isolated validation build")
+		}
+	}
 	switch args[0] {
 	case "backup":
 		path, err := backup()
@@ -375,8 +412,16 @@ func runCLI(args []string) error {
 		}
 		fmt.Println("Graceful uninstall started. Existing Brutal connections will drain naturally; removal completes automatically.")
 		return nil
-	case "status", "diagnose":
+	case "status":
 		return localRequest("GET", "/api/v1/status", nil)
+	case "diagnose":
+		return localRequest("GET", "/api/v1/diagnose", nil)
+	case "budgets":
+		return localRequest("GET", "/api/v1/budgets", nil)
+	case "budget":
+		if len(args) == 3 && args[1] == "set" {
+			return localRequest("PUT", "/api/v1/budgets", strings.NewReader(args[2]))
+		}
 	case "ports":
 		return localRequest("GET", "/api/v1/ports", nil)
 	case "port":
@@ -392,15 +437,44 @@ func runCLI(args []string) error {
 			if e != nil {
 				return e
 			}
-			gain := uint32(20)
-			if len(args) > 4 {
-				v, e := strconv.ParseUint(strings.TrimPrefix(args[4], "gain="), 10, 32)
+			p := portConfig{Port: uint16(port), RateMbps: rate, Gain: 20, Enabled: true}
+			var budget *string
+			for index, option := range args[4:] {
+				key, value, ok := strings.Cut(option, "=")
+				if !ok {
+					if index != 0 {
+						return errors.New("expected gain=, compensation_cap_percent= or budget=")
+					}
+					key, value = "gain", option // preserve the old positional gain syntax
+				}
+				if key == "budget" {
+					p.Budget = value
+					budget = &value
+					continue
+				}
+				v, e := strconv.ParseUint(value, 10, 32)
 				if e != nil {
 					return e
 				}
-				gain = uint32(v)
+				switch key {
+				case "gain":
+					p.Gain = uint32(v)
+				case "compensation_cap_percent":
+					if v < 100 || v > 125 {
+						return errors.New("compensation cap must be 100..125")
+					}
+					p.CompensationCapPercent = uint32(v)
+				default:
+					return errors.New("unknown port option")
+				}
 			}
-			b, _ := json.Marshal(portConfig{Port: uint16(port), RateMbps: rate, Gain: gain, Enabled: true})
+			b, e := json.Marshal(struct {
+				portConfig
+				Budget *string `json:"budget,omitempty"`
+			}{p, budget})
+			if e != nil {
+				return e
+			}
 			return localRequest("POST", "/api/v1/ports", strings.NewReader(string(b)))
 		}
 	case "password":
@@ -447,7 +521,7 @@ func runCLI(args []string) error {
 			return localRequest("PUT", "/api/v1/autostart", strings.NewReader(string(b)))
 		}
 	}
-	return errors.New("usage: tbc2 [manager|web|init [panel-port]|status|ports|port add PORT Mbps [gain=20]|port del PORT|password NEW|update|autostart on|autostart off]")
+	return errors.New("usage: tbc2 [manager|web|probe-bpf|init [panel-port]|status|diagnose|budgets|budget set JSON_ARRAY|ports|port add PORT Mbps [gain=20] [compensation_cap_percent=100..125] [budget=NAME]|port del PORT|password NEW|update|autostart on|autostart off]")
 }
 
 func panelManagementMenu() error {

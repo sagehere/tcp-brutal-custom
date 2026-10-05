@@ -31,6 +31,22 @@ jobs:
       - name: Run Go tests
         run: CGO_ENABLED=0 go test ./...
 
+      - name: Check clock and browser metrics regressions
+        run: |
+          cc -O2 -Wall -Wextra -Werror tools/clock-test.c -o /tmp/brutal-clock-test
+          /tmp/brutal-clock-test
+          node --check web/app.js
+          node tools/web-metrics-test.cjs
+          python3 -m py_compile scripts/review-benchmark.py scripts/review-kernel-regression.py scripts/review-transfer.py scripts/review-summarize.py scripts/review-selfcheck.py
+          python3 scripts/review-summarize.py --self-test
+
+      - name: Compile kernel module
+        run: |
+          sudo apt-get install -y linux-headers-generic
+          headers=$(find /usr/src -maxdepth 1 -type d -name 'linux-headers-*-generic' | sort -V | tail -1)
+          test -n "$headers"
+          make KERNEL_DIR="$headers"
+
       - name: Verify make clean preserves go.mod
         run: |
           before=$(sha256sum go.mod | awk '{print $1}')

@@ -5,7 +5,6 @@ package main
 import (
 	"archive/zip"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -80,6 +79,9 @@ func backup() (string, error) {
 }
 
 func restore(name string) error {
+	if algorithmName != "brutal" {
+		return errors.New("system restore is disabled in an isolated validation build")
+	}
 	if os.Geteuid() != 0 {
 		return errors.New("root required")
 	}
@@ -135,8 +137,8 @@ func restore(name string) error {
 	if err != nil {
 		return err
 	}
-	var cfg config
-	if err = json.Unmarshal(b, &cfg); err != nil {
+	cfg, err := parseConfig(b)
+	if err != nil {
 		return err
 	}
 	if cfg.WebPort == 0 || cfg.PasswordHash == "" {

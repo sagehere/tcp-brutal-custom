@@ -6,12 +6,16 @@ KBUILD_LLVM     := $(if $(KERNEL_CONFIG),$(if $(shell grep -qs '^CONFIG_CC_IS_CL
 DKMS_TARBALL    ?= dkms.tar.gz
 TAR             ?= tar
 CLANG_FORMAT    ?= clang-format-18
-SRCS            := brutal.h brutal_cc.c brutal_sockopt.c brutal_rules.c brutal_ports.c tools/brutalctl.c tools/Makefile .clang-format
-FORMAT_SRCS     := $(filter %.c %.h,$(SRCS))
-obj-m           += brutal.o
-brutal-objs     := brutal_cc.o brutal_sockopt.o brutal_rules.o brutal_ports.o
+SRCS            := brutal.h brutal_clock.h brutal_cc.c brutal_sockopt.c brutal_rules.c brutal_ports.c tools/brutalctl.c tools/Makefile .clang-format
+FORMAT_SRCS     := $(filter %.c %.h,$(SRCS)) tools/clock-test.c
+BRUTAL_MODULE   ?= brutal
+obj-m           += $(BRUTAL_MODULE).o
+$(BRUTAL_MODULE)-objs := brutal_cc.o brutal_sockopt.o brutal_rules.o brutal_ports.o
 
 ccflags-y := -std=gnu99
+ifeq ($(BRUTAL_MODULE),brutal_review)
+ccflags-y += -DBRUTAL_REVIEW
+endif
 
 # Kernels with the BBRv3 patchset (XanMod and others) replace the min_tso_segs
 # hook with tso_segs(sk, mss_now), which returns the burst size instead of a
@@ -35,10 +39,10 @@ clean: clean-dkms.conf clean-dkms-tarball
 		if [ -f "$keep" ]; then mv -f "$keep" go.mod; trap - EXIT HUP INT TERM; fi
 
 load:
-	sudo insmod brutal.ko
+	sudo insmod $(BRUTAL_MODULE).ko
 
 unload:
-	sudo rmmod brutal
+	sudo rmmod $(BRUTAL_MODULE)
 
 .PHONY: format format-check
 format:

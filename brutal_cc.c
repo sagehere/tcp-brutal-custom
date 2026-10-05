@@ -3,21 +3,22 @@
 #include <linux/math64.h>
 #include <linux/slab.h>
 #include "brutal.h"
+#include "brutal_clock.h"
 
 #define MIN_PKT_INFO_SAMPLES 50
 #define MIN_ACK_RATE_PERCENT 80
 
 // An unused reserved slot is returned to the group this long after its time
 #define RESV_STALE_NS (20 * NSEC_PER_MSEC)
-// Max lag of the group clock behind real time (token bucket depth)
-#define GROUP_MAX_LAG_NS (2 * NSEC_PER_MSEC)
 
 // Configured rate compensated for this socket's loss
 static u64 brutal_effective_rate(const struct brutal *brutal)
 {
     u64 rate = brutal->group ? READ_ONCE(brutal->group->rate) : brutal->rate;
 
-    return div_u64(rate * 100, brutal->ack_rate);
+    u32 cap = brutal->group ? READ_ONCE(brutal->group->compensation_cap_percent) : 125;
+
+    return min(div_u64(rate * 100, brutal->ack_rate), div_u64(rate * cap, 100));
 }
 
 // Account from TCP's own payload counters. The last flush is on CA release,
@@ -29,28 +30,36 @@ void brutal_stats_flush(struct sock *sk)
     struct brutal_group *g = brutal->group;
     struct tcp_sock *tp = tcp_sk(sk);
     u64 sent, acked, retrans;
-    u32 rtt;
 
     if (!g || !st)
         return;
     sent = tp->bytes_sent;
     acked = tp->bytes_acked;
     retrans = tp->bytes_retrans;
-    rtt = tp->srtt_us >> 3;
     spin_lock_bh(&g->lock);
     g->sent_bytes += sent - st->sent;
     g->acked_bytes += acked - st->acked;
     g->retrans_bytes += retrans - st->retrans;
-    if (rtt)
-    {
-        g->rtt_sum_us += rtt;
-        g->rtt_samples++;
-        g->rtt_max_us = max(g->rtt_max_us, rtt);
-    }
     spin_unlock_bh(&g->lock);
     st->sent = sent;
     st->acked = acked;
     st->retrans = retrans;
+}
+
+void brutal_group_settle(struct sock *sk)
+{
+    struct brutal *brutal = inet_csk_ca(sk);
+    struct brutal_group *g = brutal->group;
+    u64 sent;
+
+    if (!g || !brutal->resv_bytes)
+        return;
+    sent = tcp_sk(sk)->bytes_sent - brutal->resv_bytes_sent;
+    // In a group, the otherwise unused per-socket rate holds the billing rate.
+    spin_lock_bh(&g->lock);
+    g->next_ns = brutal_clock_settle(g->next_ns, tcp_clock_ns(), brutal->resv_bytes, sent, brutal->rate);
+    spin_unlock_bh(&g->lock);
+    brutal->resv_bytes = 0;
 }
 
 void brutal_update_rate(struct sock *sk)
@@ -145,7 +154,6 @@ static void brutal_group_reserve(struct sock *sk)
     if (brutal->resv_bytes)
     {
         u64 sent = tp->bytes_sent - brutal->resv_bytes_sent;
-        s64 delta;
 
         if (!sent && (s64)(now - brutal->resv_start_ns) < (s64)RESV_STALE_NS)
         {
@@ -154,14 +162,7 @@ static void brutal_group_reserve(struct sock *sk)
                 tp->tcp_wstamp_ns = brutal->resv_start_ns;
             return;
         }
-        delta = (s64)sent - (s64)brutal->resv_bytes; // < 0: give time back
-        spin_lock_bh(&g->lock);
-        if (delta >= 0)
-            g->next_ns += div64_u64((u64)delta * NSEC_PER_SEC, rate);
-        else
-            g->next_ns -= div64_u64((u64)(-delta) * NSEC_PER_SEC, rate);
-        spin_unlock_bh(&g->lock);
-        brutal->resv_bytes = 0;
+        brutal_group_settle(sk);
     }
 
     brutal_stats_flush(sk);
@@ -180,13 +181,14 @@ static void brutal_group_reserve(struct sock *sk)
     burst = brutal_burst_estimate(sk, rate, unsent);
 
     spin_lock_bh(&g->lock);
-    start = max(g->next_ns, now - GROUP_MAX_LAG_NS);
-    g->next_ns = start + div64_u64((u64)burst * NSEC_PER_SEC, rate);
+    start = brutal_clock_adjust(g->next_ns, now, 0, false);
+    g->next_ns = brutal_clock_adjust(start, now, div64_u64((u64)burst * NSEC_PER_SEC, rate), false);
     spin_unlock_bh(&g->lock);
 
     brutal->resv_start_ns = start;
     brutal->resv_bytes = burst;
     brutal->resv_bytes_sent = tp->bytes_sent;
+    brutal->rate = rate;
     if (tp->tcp_wstamp_ns < start)
         tp->tcp_wstamp_ns = start;
 }
@@ -281,6 +283,17 @@ static void brutal_main(struct sock *sk, const struct rate_sample *rs)
 
     brutal_update_rate(sk);
     brutal_stats_flush(sk);
+    if (brutal->group && rs->rtt_us > 0)
+    {
+        struct brutal_group *g = brutal->group;
+        u32 rtt = tp->srtt_us >> 3;
+
+        spin_lock_bh(&g->lock);
+        g->rtt_sum_us += rtt;
+        g->rtt_samples++;
+        g->rtt_max_us = max(g->rtt_max_us, rtt);
+        spin_unlock_bh(&g->lock);
+    }
 }
 
 static u32 brutal_undo_cwnd(struct sock *sk)
@@ -295,7 +308,7 @@ static u32 brutal_ssthresh(struct sock *sk)
 
 struct tcp_congestion_ops tcp_brutal_ops = {
     .flags = TCP_CONG_NON_RESTRICTED,
-    .name = "brutal",
+    .name = BRUTAL_ALGORITHM,
     .owner = THIS_MODULE,
     .init = brutal_init,
     .release = brutal_release,

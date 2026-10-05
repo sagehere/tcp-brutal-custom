@@ -368,6 +368,11 @@ if [[ -f "$tmp/old-rules" && -w /proc/net/tcp_brutal/rules ]]; then
 fi
 if [[ "$mode" == 'install' ]]; then systemctl enable tcp-brutal-custom-manager.service tcp-brutal-custom-web.service; fi
 systemctl start tcp-brutal-custom-manager.service tcp-brutal-custom-web.service
+if ! "$binary" probe-bpf; then
+  echo 'Post-install algorithm/group/transfer self-check failed' >&2
+  rollback
+  exit 1
+fi
 rm -f "$old_short_binary" "$legacy_binary"
 trap - ERR
 record_status complete 'active'

@@ -12,11 +12,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"os/user"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,21 +29,22 @@ import (
 )
 
 type portState struct {
-	Port       uint16        `json:"port"`
-	Active     bool          `json:"active"`
-	Rate       uint64        `json:"rate_bytes_per_second"`
-	Gain       uint32        `json:"gain"`
-	Group      uint64        `json:"group"`
-	Members    uint32        `json:"members"`
-	Sent       uint64        `json:"sent"`
-	Acked      uint64        `json:"acked"`
-	Retrans    uint64        `json:"retrans"`
-	Expected   uint64        `json:"expected_bytes"`
-	Actual     uint64        `json:"actual_bytes"`
-	RTTSum     uint64        `json:"rtt_sum_us"`
-	RTTSamples uint64        `json:"rtt_samples"`
-	RTTMax     uint32        `json:"rtt_max_us"`
-	Selector   selectorCount `json:"selector"`
+	Port                   uint16        `json:"port"`
+	Active                 bool          `json:"active"`
+	Rate                   uint64        `json:"rate_bytes_per_second"`
+	Gain                   uint32        `json:"gain"`
+	Group                  uint64        `json:"group"`
+	Members                uint32        `json:"members"`
+	Sent                   uint64        `json:"sent"`
+	Acked                  uint64        `json:"acked"`
+	Retrans                uint64        `json:"retrans"`
+	Expected               uint64        `json:"expected_bytes"`
+	Actual                 uint64        `json:"actual_bytes"`
+	RTTSum                 uint64        `json:"rtt_sum_us"`
+	RTTSamples             uint64        `json:"rtt_samples"`
+	RTTMax                 uint32        `json:"rtt_max_us"`
+	Selector               selectorCount `json:"selector"`
+	CompensationCapPercent uint32        `json:"compensation_cap_percent"`
 }
 
 type session struct {
@@ -112,7 +115,7 @@ func managerMode() error {
 			}
 		}
 	}
-	if err = os.MkdirAll("/run/tcp-brutal-custom", 0750); err != nil {
+	if err = os.MkdirAll(filepath.Dir(socketPath), 0750); err != nil {
 		return err
 	}
 	group, err := user.LookupGroup("tcpbrutal")
@@ -123,7 +126,9 @@ func managerMode() error {
 	if err != nil {
 		return err
 	}
-	os.Chown("/run/tcp-brutal-custom", 0, gid)
+	if err = os.Chown(filepath.Dir(socketPath), 0, gid); err != nil {
+		return err
+	}
 	if err = writePublicWebConfig(cfg, gid); err != nil {
 		return err
 	}
@@ -143,7 +148,11 @@ func managerMode() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go waitSignal(cancel)
-	go m.collect(ctx)
+	var workers sync.WaitGroup
+	workers.Add(2)
+	go func() { defer workers.Done(); m.collect(ctx) }()
+	go func() { defer workers.Done(); m.maintain(ctx) }()
+	defer func() { cancel(); workers.Wait() }()
 	server := &http.Server{Handler: m.routes(), ReadHeaderTimeout: 5 * time.Second,
 		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
 			return context.WithValue(ctx, peerKey{}, peerUID(c))
@@ -176,6 +185,10 @@ func parsePorts() ([]portState, error) {
 		num := func(k string) uint64 { v, _ := strconv.ParseUint(fields[k], 10, 64); return v }
 		p := portState{Port: uint16(num("port")), Active: num("active") == 1, Rate: num("rate"), Gain: uint32(num("gain")), Group: num("id"), Members: uint32(num("members")), Sent: num("sent"), Acked: num("acked"), Retrans: num("retrans"), RTTSum: num("rtt_sum"), RTTSamples: num("rtt_samples"), RTTMax: uint32(num("rtt_max"))}
 		p.Expected, p.Actual = sendBytes(p.Sent, p.Retrans)
+		p.CompensationCapPercent = uint32(num("compensation_cap_percent"))
+		if p.CompensationCapPercent == 0 {
+			p.CompensationCapPercent = 125
+		}
 		out = append(out, p)
 	}
 	return out, nil
@@ -195,8 +208,8 @@ func validatePort(p portConfig, webPort uint16) error {
 	if p.Port == 0 || p.Port == webPort {
 		return errors.New("invalid or panel port")
 	}
-	if p.RateMbps < 0.5 || p.RateMbps > 1000000 || p.Gain < 5 || p.Gain > 80 {
-		return errors.New("rate or gain out of range")
+	if math.IsNaN(p.RateMbps) || math.IsInf(p.RateMbps, 0) || p.RateMbps < 0.5 || p.RateMbps > 1000000 || p.Gain < 5 || p.Gain > 80 || compensationCap(p) < 100 || compensationCap(p) > 125 {
+		return errors.New("rate, gain or compensation cap out of range")
 	}
 	return nil
 }
@@ -206,7 +219,7 @@ func (m *manager) applyPort(p portConfig) error {
 		return err
 	}
 	rate := uint64(p.RateMbps*1e6/8 + 0.5)
-	if err := writePort(fmt.Sprintf("add %d rate=%d gain=%d", p.Port, rate, p.Gain)); err != nil {
+	if err := writePort(fmt.Sprintf("add %d rate=%d gain=%d compensation_cap_percent=%d", p.Port, rate, p.Gain, compensationCap(p))); err != nil {
 		return err
 	}
 	if err := m.selector.Enable(p.Port); err != nil {
@@ -229,8 +242,6 @@ func (m *manager) disablePort(port uint16) error {
 func (m *manager) collect(ctx context.Context) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
-	cleanup := time.NewTicker(time.Hour)
-	defer cleanup.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -241,7 +252,7 @@ func (m *manager) collect(ctx context.Context) {
 				log.Printf("sampling: %v", err)
 				continue
 			}
-			now := time.Now().Unix()
+			now := time.Now()
 			for _, p := range states {
 				var c selectorCount
 				if p.Active {
@@ -251,12 +262,23 @@ func (m *manager) collect(ctx context.Context) {
 						continue
 					}
 				}
-				x := sample{Time: now, Port: p.Port, Group: p.Group, Sent: p.Sent, Acked: p.Acked, Retrans: p.Retrans, Success: c.Success, Failure: c.Failure, Members: p.Members, RTTSum: p.RTTSum, RTTSamples: p.RTTSamples, RTTMax: p.RTTMax}
+				x := sample{Time: now.Unix(), Clock: now, Port: p.Port, Group: p.Group, Sent: p.Sent, Acked: p.Acked, Retrans: p.Retrans, Success: c.Success, Failure: c.Failure, Members: p.Members, RTTSum: p.RTTSum, RTTSamples: p.RTTSamples, RTTMax: p.RTTMax}
 				if err = m.history.record(x); err != nil {
 					log.Printf("history: %v", err)
 				}
 			}
-		case <-cleanup.C:
+		}
+	}
+}
+
+func (m *manager) maintain(ctx context.Context) {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
 			if err := m.history.prune(); err != nil {
 				log.Printf("retention: %v", err)
 			}
@@ -276,7 +298,14 @@ func bad(w http.ResponseWriter, status int, err error) {
 func decode(r *http.Request, v any) error {
 	d := json.NewDecoder(io.LimitReader(r.Body, 65536))
 	d.DisallowUnknownFields()
-	return d.Decode(v)
+	if err := d.Decode(v); err != nil {
+		return err
+	}
+	var trailing any
+	if err := d.Decode(&trailing); err != io.EOF {
+		return errors.New("expected one JSON value")
+	}
+	return nil
 }
 
 func (m *manager) authorized(w http.ResponseWriter, r *http.Request) bool {
@@ -398,6 +427,10 @@ func (m *manager) login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *manager) api(w http.ResponseWriter, r *http.Request) {
+	if algorithmName != "brutal" && (r.URL.Path == "/api/v1/autostart" || r.URL.Path == "/api/v1/update" || r.URL.Path == "/api/v1/update/check") {
+		bad(w, 403, errors.New("system maintenance is disabled in an isolated validation build"))
+		return
+	}
 	switch {
 	case r.Method == "GET" && r.URL.Path == "/api/v1/status":
 		states, err := parsePorts()
@@ -443,6 +476,10 @@ func (m *manager) api(w http.ResponseWriter, r *http.Request) {
 		jsonReply(w, 200, states)
 	case r.Method == "GET" && r.URL.Path == "/api/v1/connections":
 		m.connections(w, r)
+	case r.Method == "GET" && r.URL.Path == "/api/v1/diagnose":
+		m.diagnose(w, r)
+	case (r.Method == "GET" || r.Method == "PUT") && r.URL.Path == "/api/v1/budgets":
+		m.budgets(w, r)
 	case r.Method == "POST" && r.URL.Path == "/api/v1/ports":
 		m.putPort(w, r)
 	case r.Method == "DELETE" && strings.HasPrefix(r.URL.Path, "/api/v1/ports/"):
@@ -469,10 +506,28 @@ func (m *manager) api(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *manager) putPort(w http.ResponseWriter, r *http.Request) {
-	var p portConfig
-	if err := decode(r, &p); err != nil {
+	var input struct {
+		portConfig
+		CompensationCapPercent json.RawMessage `json:"compensation_cap_percent"`
+		Budget                 *string         `json:"budget"`
+	}
+	if err := decode(r, &input); err != nil {
 		bad(w, 400, err)
 		return
+	}
+	p := input.portConfig
+	if input.Budget != nil {
+		p.Budget = *input.Budget
+	}
+	if len(input.CompensationCapPercent) != 0 {
+		if err := json.Unmarshal(input.CompensationCapPercent, &p.CompensationCapPercent); err != nil {
+			bad(w, 400, err)
+			return
+		}
+		if p.CompensationCapPercent < 100 || p.CompensationCapPercent > 125 {
+			bad(w, 400, errors.New("compensation cap must be 100..125"))
+			return
+		}
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -490,6 +545,25 @@ func (m *manager) putPort(w http.ResponseWriter, r *http.Request) {
 	var previous portConfig
 	if idx >= 0 {
 		previous = m.cfg.Ports[idx]
+		if input.Budget == nil {
+			p.Budget = previous.Budget
+		}
+	}
+	if p.CompensationCapPercent == 0 {
+		p.CompensationCapPercent = 125
+		if idx >= 0 {
+			p.CompensationCapPercent = compensationCap(previous)
+		}
+	}
+	prospective := append([]portConfig(nil), m.cfg.Ports...)
+	if idx >= 0 {
+		prospective[idx] = p
+	} else {
+		prospective = append(prospective, p)
+	}
+	if err := validateBudgets(m.cfg.Budgets, prospective); err != nil {
+		bad(w, 400, err)
+		return
 	}
 	if p.Enabled {
 		if err := m.applyPort(p); err != nil {
@@ -597,7 +671,8 @@ func (m *manager) metrics(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 		w.Header().Set("Content-Disposition", "attachment; filename=brutal-history.csv")
 		csvw := csv.NewWriter(w)
-		csvw.Write([]string{"time_unix", "port", "group", "sent_bytes", "acked_bytes", "retrans_bytes", "retrans_percent", "success", "failure", "members", "rtt_mean_us", "rtt_max_us", "gap", "event", "expected_bytes", "actual_bytes"})
+		header := []string{"time_unix", "port", "group", "sent_bytes", "acked_bytes", "retrans_bytes", "retrans_percent", "success", "failure", "members", "rtt_mean_us", "rtt_max_us", "gap", "event", "expected_bytes", "actual_bytes", "start_ms", "end_ms", "duration_ms", "timing_valid", "legacy_timing", "acked_mbps", "sent_mbps", "partial_coverage"}
+		csvw.Write(header)
 		for _, x := range rows {
 			retrans := ""
 			if x.Sent > 0 {
@@ -607,10 +682,12 @@ func (m *manager) metrics(w http.ResponseWriter, r *http.Request) {
 			if x.RTTSamples > 0 {
 				mean = fmt.Sprintf("%d", x.RTTSum/x.RTTSamples)
 			}
-			csvw.Write([]string{strconv.FormatInt(x.Time, 10), strconv.Itoa(int(x.Port)), strconv.FormatUint(x.Group, 10), strconv.FormatUint(x.Sent, 10), strconv.FormatUint(x.Acked, 10), strconv.FormatUint(x.Retrans, 10), retrans, strconv.FormatUint(x.Success, 10), strconv.FormatUint(x.Failure, 10), strconv.Itoa(int(x.Members)), mean, strconv.Itoa(int(x.RTTMax)), strconv.FormatBool(x.Gap), "", strconv.FormatUint(x.Expected, 10), strconv.FormatUint(x.Actual, 10)})
+			csvw.Write([]string{strconv.FormatInt(x.Time, 10), strconv.Itoa(int(x.Port)), strconv.FormatUint(x.Group, 10), strconv.FormatUint(x.Sent, 10), strconv.FormatUint(x.Acked, 10), strconv.FormatUint(x.Retrans, 10), retrans, strconv.FormatUint(x.Success, 10), strconv.FormatUint(x.Failure, 10), strconv.Itoa(int(x.Members)), mean, strconv.Itoa(int(x.RTTMax)), strconv.FormatBool(x.Gap), "", strconv.FormatUint(x.Expected, 10), strconv.FormatUint(x.Actual, 10), strconv.FormatInt(x.StartMS, 10), strconv.FormatInt(x.EndMS, 10), strconv.FormatInt(x.DurationMS, 10), strconv.FormatBool(x.TimingValid), strconv.FormatBool(x.Legacy), csvRate(x.AckMbps), csvRate(x.SentMbps), strconv.FormatBool(x.PartialCoverage)})
 		}
 		for _, x := range events {
-			csvw.Write([]string{strconv.FormatInt(x.Time, 10), "", "", "", "", "", "", "", "", "", "", "", "", "", x.Kind + ":" + x.Detail, "", ""})
+			row := make([]string, len(header))
+			row[0], row[13] = strconv.FormatInt(x.Time, 10), x.Kind+":"+x.Detail
+			csvw.Write(row)
 		}
 		csvw.Flush()
 		return

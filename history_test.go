@@ -76,7 +76,7 @@ func TestHistoryDeltasAndReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	restarted, err := h.query("raw", 130, 140, 443)
-	if err != nil || len(restarted) != 1 || restarted[0].Gap || restarted[0].Sent != 30 {
+	if err != nil || len(restarted) != 1 || !restarted[0].Gap || restarted[0].TimingValid || restarted[0].Sent != 30 {
 		t.Fatalf("restart checkpoint failed: %+v %v", restarted, err)
 	}
 }

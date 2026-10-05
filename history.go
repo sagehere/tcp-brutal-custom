@@ -6,27 +6,38 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
 
 type sample struct {
-	Time       int64  `json:"time"`
-	Port       uint16 `json:"port"`
-	Group      uint64 `json:"group"`
-	Sent       uint64 `json:"sent"`
-	Acked      uint64 `json:"acked"`
-	Retrans    uint64 `json:"retrans"`
-	Expected   uint64 `json:"expected_bytes"`
-	Actual     uint64 `json:"actual_bytes"`
-	Success    uint64 `json:"success"`
-	Failure    uint64 `json:"failure"`
-	Members    uint32 `json:"members"`
-	RTTSum     uint64 `json:"rtt_sum_us"`
-	RTTSamples uint64 `json:"rtt_samples"`
-	RTTMax     uint32 `json:"rtt_max_us"`
-	Gap        bool   `json:"gap"`
+	Time            int64     `json:"time"`
+	Port            uint16    `json:"port"`
+	Group           uint64    `json:"group"`
+	Sent            uint64    `json:"sent"`
+	Acked           uint64    `json:"acked"`
+	Retrans         uint64    `json:"retrans"`
+	Expected        uint64    `json:"expected_bytes"`
+	Actual          uint64    `json:"actual_bytes"`
+	Success         uint64    `json:"success"`
+	Failure         uint64    `json:"failure"`
+	Members         uint32    `json:"members"`
+	RTTSum          uint64    `json:"rtt_sum_us"`
+	RTTSamples      uint64    `json:"rtt_samples"`
+	RTTMax          uint32    `json:"rtt_max_us"`
+	Gap             bool      `json:"gap"`
+	StartMS         int64     `json:"start_ms"`
+	EndMS           int64     `json:"end_ms"`
+	DurationMS      int64     `json:"duration_ms"`
+	TimingVersion   int       `json:"timing_version"`
+	TimingValid     bool      `json:"timing_valid"`
+	Legacy          bool      `json:"legacy_timing"`
+	PartialCoverage bool      `json:"partial_coverage"`
+	AckMbps         *float64  `json:"acked_mbps"`
+	SentMbps        *float64  `json:"sent_mbps"`
+	Clock           time.Time `json:"-"`
 }
 
 func sendBytes(sent, retrans uint64) (uint64, uint64) {
@@ -46,6 +57,7 @@ type history struct {
 	db   *sql.DB
 	dir  string
 	last map[string]sample
+	mu   sync.Mutex
 }
 
 func openHistory() (*history, error) {
@@ -72,6 +84,10 @@ func openHistoryAt(dir string) (*history, error) {
 			db.Close()
 			return nil, err
 		}
+	}
+	if err = migrateHistory(db); err != nil {
+		db.Close()
+		return nil, err
 	}
 	h := &history{db: db, dir: dir, last: map[string]sample{}}
 	rows, err := db.Query("SELECT port,group_id,sent,acked,retrans,success,failure,rtt_sum,rtt_samples FROM checkpoints")
@@ -107,10 +123,27 @@ func delta(now, prev uint64) (uint64, bool) {
 }
 
 func (h *history) record(now sample) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if now.Clock.IsZero() {
+		now.Clock = time.Unix(now.Time, 0)
+	}
 	key := fmt.Sprintf("%d/%d", now.Port, now.Group)
 	prev, ok := h.last[key]
 	row := now
 	row.Gap = !ok
+	row.TimingVersion = 1
+	row.EndMS = now.Clock.UnixMilli()
+	if ok && !prev.Clock.IsZero() {
+		row.StartMS = prev.Clock.UnixMilli()
+		row.DurationMS = now.Clock.Sub(prev.Clock).Milliseconds()
+		wallDuration := row.EndMS - row.StartMS
+		if row.DurationMS <= 0 || row.DurationMS > 15000 || wallDuration <= 0 || wallDuration-row.DurationMS > 1000 || row.DurationMS-wallDuration > 1000 {
+			row.Gap = true
+		}
+	} else {
+		row.Gap = true
+	}
 	if ok {
 		var reset bool
 		row.Sent, reset = delta(now.Sent, prev.Sent)
@@ -139,10 +172,11 @@ func (h *history) record(now sample) error {
 		name    string
 		seconds int64
 	}{{"raw", 10}, {"minute", 60}, {"hour", 3600}} {
-		ts := now.Time / tier.seconds * tier.seconds
-		_, err = tx.Exec(`INSERT INTO samples VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(tier,ts,port,group_id) DO UPDATE SET sent=sent+excluded.sent,acked=acked+excluded.acked,retrans=retrans+excluded.retrans,success=success+excluded.success,failure=failure+excluded.failure,members=excluded.members,rtt_sum=rtt_sum+excluded.rtt_sum,rtt_samples=rtt_samples+excluded.rtt_samples,rtt_max=max(rtt_max,excluded.rtt_max),gap=max(gap,excluded.gap)`, tier.name, ts, row.Port, row.Group, row.Sent, row.Acked, row.Retrans, row.Success, row.Failure, row.Members, row.RTTSum, row.RTTSamples, row.RTTMax, row.Gap)
-		if err != nil {
-			return err
+		for _, piece := range intervalPieces(row, tier.seconds) {
+			_, err = tx.Exec(`INSERT INTO samples (tier,ts,port,group_id,sent,acked,retrans,success,failure,members,rtt_sum,rtt_samples,rtt_max,gap,start_ms,end_ms,duration_ms,timing_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(tier,ts,port,group_id) DO UPDATE SET sent=sent+excluded.sent,acked=acked+excluded.acked,retrans=retrans+excluded.retrans,success=success+excluded.success,failure=failure+excluded.failure,members=excluded.members,rtt_sum=rtt_sum+excluded.rtt_sum,rtt_samples=rtt_samples+excluded.rtt_samples,rtt_max=max(rtt_max,excluded.rtt_max),gap=max(gap,excluded.gap),start_ms=min(start_ms,excluded.start_ms),end_ms=max(end_ms,excluded.end_ms),duration_ms=duration_ms+excluded.duration_ms,timing_version=min(timing_version,excluded.timing_version)`, tier.name, piece.Time, piece.Port, piece.Group, piece.Sent, piece.Acked, piece.Retrans, piece.Success, piece.Failure, piece.Members, piece.RTTSum, piece.RTTSamples, piece.RTTMax, piece.Gap, piece.StartMS, piece.EndMS, piece.DurationMS, piece.TimingVersion)
+			if err != nil {
+				return err
+			}
 		}
 	}
 	if _, err = tx.Exec(`INSERT INTO checkpoints VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(port,group_id) DO UPDATE SET sent=excluded.sent,acked=excluded.acked,retrans=excluded.retrans,success=excluded.success,failure=excluded.failure,rtt_sum=excluded.rtt_sum,rtt_samples=excluded.rtt_samples`, now.Port, now.Group, now.Sent, now.Acked, now.Retrans, now.Success, now.Failure, now.RTTSum, now.RTTSamples); err != nil {
@@ -229,7 +263,7 @@ func (h *history) query(tier string, from, to int64, port uint16) ([]sample, err
 	if from >= to || to-from > 366*86400 {
 		return nil, fmt.Errorf("invalid time range")
 	}
-	rows, err := h.db.Query(`SELECT ts,port,group_id,sent,acked,retrans,success,failure,members,rtt_sum,rtt_samples,rtt_max,gap FROM samples WHERE tier=? AND ts>=? AND ts<? AND (?=0 OR port=?) ORDER BY ts,port LIMIT 100000`, tier, from, to, port, port)
+	rows, err := h.db.Query(`SELECT ts,port,group_id,sent,acked,retrans,success,failure,members,rtt_sum,rtt_samples,rtt_max,gap,start_ms,end_ms,duration_ms,timing_version FROM samples WHERE tier=? AND ts>=? AND ts<? AND (?=0 OR port=?) ORDER BY ts,port LIMIT 100000`, tier, from, to, port, port)
 	if err != nil {
 		return nil, err
 	}
@@ -237,10 +271,12 @@ func (h *history) query(tier string, from, to int64, port uint16) ([]sample, err
 	out := []sample{}
 	for rows.Next() {
 		var x sample
-		if err := rows.Scan(&x.Time, &x.Port, &x.Group, &x.Sent, &x.Acked, &x.Retrans, &x.Success, &x.Failure, &x.Members, &x.RTTSum, &x.RTTSamples, &x.RTTMax, &x.Gap); err != nil {
+		if err := rows.Scan(&x.Time, &x.Port, &x.Group, &x.Sent, &x.Acked, &x.Retrans, &x.Success, &x.Failure, &x.Members, &x.RTTSum, &x.RTTSamples, &x.RTTMax, &x.Gap, &x.StartMS, &x.EndMS, &x.DurationMS, &x.TimingVersion); err != nil {
 			return nil, err
 		}
 		x.Expected, x.Actual = sendBytes(x.Sent, x.Retrans)
+		x.Legacy = x.TimingVersion == 0
+		x.TimingValid = !x.Legacy && !x.Gap && x.DurationMS > 0
 		out = append(out, x)
 	}
 	if err := rows.Err(); err != nil {
@@ -248,6 +284,27 @@ func (h *history) query(tier string, from, to int64, port uint16) ([]sample, err
 	}
 	if len(out) == 100000 {
 		return nil, fmt.Errorf("too many samples: select a port or coarser interval")
+	}
+	coverage, partial := map[int64]sample{}, map[int64]bool{}
+	for _, x := range out {
+		if !x.TimingValid {
+			continue
+		}
+		if previous, ok := coverage[x.Time]; ok && (x.StartMS != previous.StartMS || x.EndMS != previous.EndMS || x.DurationMS != previous.DurationMS) {
+			partial[x.Time] = true
+		}
+		coverage[x.Time] = x
+	}
+	for i := range out {
+		x := &out[i]
+		// ponytail: unequal coverage invalidates sums; lifecycle-aware weighting
+		// needs retirement metadata rather than inventing zero-filled intervals.
+		x.PartialCoverage = partial[x.Time]
+		x.TimingValid = x.TimingValid && !x.PartialCoverage
+		if x.TimingValid {
+			ack, sent := float64(x.Acked)*8/float64(x.DurationMS)/1000, float64(x.Sent)*8/float64(x.DurationMS)/1000
+			x.AckMbps, x.SentMbps = &ack, &sent
+		}
 	}
 	return out, nil
 }

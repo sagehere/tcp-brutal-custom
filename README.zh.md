@@ -89,7 +89,7 @@ curl -fsSL https://raw.githubusercontent.com/sagehere/tcp-brutal-custom/main/scr
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sagehere/tcp-brutal-custom/main/scripts/bootstrap.sh | \
-  sudo env TCP_BRUTAL_RELEASE_TAG=v2.1.9 bash
+  sudo env TCP_BRUTAL_RELEASE_TAG=v2.1.10 bash
 ```
 
 > **首次安装的信任边界：** `bootstrap.sh` 本身仍来自本 GitHub 仓库。如果你的威胁模型包含“首次安装前整个 GitHub 仓库/账号已经被接管”，仍应通过独立可信渠道核对下方公钥指纹后再授予 root 权限。安装成功后公钥会固定在本机，后续普通更新不会重新从 GitHub 建立信任根。
@@ -164,6 +164,18 @@ http://服务器IP:23333
 - 检查新版本和发布说明；真正的维护升级只能由本机 root CLI 发起。
 
 ## CLI 使用
+
+本轮修复新增补偿上限、只告警的出口预算和只读诊断，详细兼容性与验证方法见 [稳健优化说明](IMPROVEMENTS.zh.md)。性能结论与未覆盖范围见 [评估报告](PERFORMANCE_REVIEW.zh.md)。
+
+```bash
+# 可命名的容量预算；省略预留比例时为 10%，默认没有预算
+sudo tbc2 budget set '[{"name":"wan","capacity_mbps":100,"reserve_percent":10}]'
+sudo tbc2 port add 443 70 compensation_cap_percent=110 budget=wan
+sudo tbc2 budgets
+sudo tbc2 diagnose
+```
+
+补偿上限范围为整数 `100～125`；`100` 关闭补偿，新增端口省略时为 `125`。旧请求更新现有端口且省略补偿/预算字段时保留原设置。预算不改变网卡队列或限制其他业务流量。
 
 进入交互式管理菜单：
 
