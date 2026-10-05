@@ -5,7 +5,7 @@ const path = require('node:path');
 const nodes = new Map();
 const node = () => ({value:'86400',textContent:'',hidden:false,dataset:{},classList:{contains:()=>false,toggle(){}},setAttribute(){},append(){},replaceChildren(){}});
 const context = vm.createContext({
-  sessionStorage:{getItem:()=>null}, console, URLSearchParams,
+  fetch:async()=>({ok:false,status:401,json:async()=>({error:'session expired'})}), console, URLSearchParams,
   document:{getElementById:id=>{if(!nodes.has(id))nodes.set(id,node());return nodes.get(id);},querySelectorAll:()=>[],querySelector:()=>node(),createElement:()=>node(),createElementNS:()=>node()},
 });
 vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/app.js'),'utf8'),context);

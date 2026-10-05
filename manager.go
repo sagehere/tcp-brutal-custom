@@ -47,10 +47,6 @@ type portState struct {
 	CompensationCapPercent uint32        `json:"compensation_cap_percent"`
 }
 
-type session struct {
-	csrf    string
-	expires time.Time
-}
 type attempt struct {
 	count int
 	since time.Time
@@ -108,6 +104,9 @@ func managerMode() error {
 	}
 	defer h.close()
 	m := &manager{cfg: cfg, selector: s, history: h, sessions: map[string]session{}, attempts: map[string]attempt{}}
+	if err = m.loadSessions(); err != nil {
+		log.Printf("restore panel sessions: %v", err)
+	}
 	for _, p := range cfg.Ports {
 		if p.Enabled {
 			if err = m.applyPort(p); err != nil {
@@ -312,19 +311,14 @@ func (m *manager) authorized(w http.ResponseWriter, r *http.Request) bool {
 	if r.Context().Value(peerKey{}) == uint32(0) {
 		return true
 	}
-	cookie, err := r.Cookie("session")
-	if err != nil {
-		bad(w, 401, errors.New("login required"))
-		return false
-	}
 	m.mu.Lock()
-	s, ok := m.sessions[cookie.Value]
+	s, ok := m.requestSession(r)
 	m.mu.Unlock()
-	if !ok || time.Now().After(s.expires) {
+	if !ok {
 		bad(w, 401, errors.New("session expired"))
 		return false
 	}
-	if r.Method != "GET" && r.Method != "HEAD" && r.Header.Get("X-CSRF-Token") != s.csrf {
+	if r.Method != "GET" && r.Method != "HEAD" && r.Header.Get("X-CSRF-Token") != s.CSRF {
 		bad(w, 403, errors.New("CSRF token required"))
 		return false
 	}
@@ -334,6 +328,8 @@ func (m *manager) authorized(w http.ResponseWriter, r *http.Request) bool {
 func (m *manager) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/login", m.login)
+	mux.HandleFunc("GET /api/v1/session", m.restoreSession)
+	mux.HandleFunc("POST /api/v1/logout", m.logoutSession)
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'")
@@ -354,7 +350,8 @@ func (m *manager) routes() http.Handler {
 
 func (m *manager) login(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Password string `json:"password"`
+		Password   string `json:"password"`
+		RememberMe bool   `json:"remember_me"`
 	}
 	if err := decode(r, &in); err != nil {
 		bad(w, 400, err)
@@ -404,8 +401,13 @@ func (m *manager) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m.mu.Lock()
+	if passwordFingerprint(cfg) != passwordFingerprint(m.cfg) {
+		m.mu.Unlock()
+		bad(w, 401, errors.New("password changed; please log in again"))
+		return
+	}
 	for key, s := range m.sessions {
-		if time.Now().After(s.expires) {
+		if !time.Now().Before(s.Expires) {
 			delete(m.sessions, key)
 		}
 	}
@@ -419,10 +421,29 @@ func (m *manager) login(w http.ResponseWriter, r *http.Request) {
 		bad(w, 503, errors.New("session capacity reached"))
 		return
 	}
+	lifetime := 8 * time.Hour
+	if in.RememberMe {
+		lifetime = rememberedSessionLifetime
+	}
+	s := session{CSRF: csrf, Expires: time.Now().Add(lifetime), Remember: in.RememberMe}
+	key := sessionDigest(token)
+	m.sessions[key] = s
+	if in.RememberMe {
+		if err = m.saveSessions(); err != nil {
+			delete(m.sessions, key)
+			m.mu.Unlock()
+			bad(w, 503, fmt.Errorf("save panel session: %w", err))
+			return
+		}
+	}
 	delete(m.attempts, ip)
-	m.sessions[token] = session{csrf: csrf, expires: time.Now().Add(8 * time.Hour)}
 	m.mu.Unlock()
-	http.SetCookie(w, &http.Cookie{Name: "session", Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: 8 * 3600})
+	cookie := sessionCookie(token)
+	if in.RememberMe {
+		cookie.MaxAge = int(lifetime / time.Second)
+		cookie.Expires = s.Expires
+	}
+	http.SetCookie(w, cookie)
 	jsonReply(w, 200, map[string]string{"csrf": csrf})
 }
 

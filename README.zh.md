@@ -89,7 +89,7 @@ curl -fsSL https://raw.githubusercontent.com/sagehere/tcp-brutal-custom/main/scr
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sagehere/tcp-brutal-custom/main/scripts/bootstrap.sh | \
-  sudo env TCP_BRUTAL_RELEASE_TAG=v2.1.10 bash
+  sudo env TCP_BRUTAL_RELEASE_TAG=v2.1.11 bash
 ```
 
 > **首次安装的信任边界：** `bootstrap.sh` 本身仍来自本 GitHub 仓库。如果你的威胁模型包含“首次安装前整个 GitHub 仓库/账号已经被接管”，仍应通过独立可信渠道核对下方公钥指纹后再授予 root 权限。安装成功后公钥会固定在本机，后续普通更新不会重新从 GitHub 建立信任根。

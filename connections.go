@@ -8,8 +8,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
+	"net/netip"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -30,12 +30,16 @@ func ssEndpoint(value string) (string, uint16, error) {
 	if i < 0 {
 		return "", 0, errors.New("missing endpoint port")
 	}
-	ip := strings.Trim(value[:i], "[]")
+	ip := value[:i]
+	if strings.HasPrefix(ip, "[") && strings.HasSuffix(ip, "]") {
+		ip = ip[1 : len(ip)-1]
+	}
 	port, err := strconv.ParseUint(value[i+1:], 10, 16)
-	if err != nil || net.ParseIP(strings.SplitN(ip, "%", 2)[0]) == nil {
+	addr, addrErr := netip.ParseAddr(ip)
+	if err != nil || addrErr != nil {
 		return "", 0, errors.New("invalid endpoint")
 	}
-	return ip, uint16(port), nil
+	return addr.Unmap().String(), uint16(port), nil
 }
 
 func parseConnections(output []byte, port uint16) ([]connection, error) {

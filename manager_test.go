@@ -64,6 +64,32 @@ func TestSendBytesAndConnectionParsing(t *testing.T) {
 	}
 }
 
+func TestConnectionEndpointNormalization(t *testing.T) {
+	for _, tc := range []struct{ input, ip string }{
+		{"112.24.229.65:44791", "112.24.229.65"},
+		{"[::ffff:112.24.229.65]:44791", "112.24.229.65"},
+		{"::ffff:112.24.229.65:44791", "112.24.229.65"},
+		{"[::ffff:7018:e541]:44791", "112.24.229.65"},
+		{"[2001:db8::2]:44791", "2001:db8::2"},
+		{"2001:db8::2:44791", "2001:db8::2"},
+		{"[fe80::2%eth0]:44791", "fe80::2%eth0"},
+	} {
+		ip, port, err := ssEndpoint(tc.input)
+		if err != nil || ip != tc.ip || port != 44791 {
+			t.Fatalf("ssEndpoint(%q)=%q,%d,%v", tc.input, ip, port, err)
+		}
+	}
+	for _, input := range []string{"missing-port", "bad-ip:443", "192.0.2.1:65536", "[2001:db8::2]:bad", "[2001:db8::2:443", "[[2001:db8::2]]:443"} {
+		if _, _, err := ssEndpoint(input); err == nil {
+			t.Fatalf("invalid endpoint accepted: %s", input)
+		}
+	}
+	rows, err := parseConnections([]byte("ESTAB 0 0 [::ffff:10.0.0.112]:443 [::ffff:112.24.229.65]:44791 brutal\n"), 443)
+	if err != nil || len(rows) != 1 || rows[0].LocalIP != "10.0.0.112" || rows[0].ClientIP != "112.24.229.65" {
+		t.Fatalf("mapped connection=%+v err=%v", rows, err)
+	}
+}
+
 func TestAutostartState(t *testing.T) {
 	query := func(manager, web string) func(string) (string, error) {
 		return func(service string) (string, error) {

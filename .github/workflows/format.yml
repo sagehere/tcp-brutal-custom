@@ -37,6 +37,7 @@ jobs:
           /tmp/brutal-clock-test
           node --check web/app.js
           node tools/web-metrics-test.cjs
+          node tools/web-session-test.cjs
           python3 -m py_compile scripts/review-benchmark.py scripts/review-kernel-regression.py scripts/review-transfer.py scripts/review-summarize.py scripts/review-selfcheck.py
           python3 scripts/review-summarize.py --self-test
 

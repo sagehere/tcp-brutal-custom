@@ -86,7 +86,7 @@ To pin a specific signed release instead of `latest`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sagehere/tcp-brutal-custom/main/scripts/bootstrap.sh | \
-  sudo env TCP_BRUTAL_RELEASE_TAG=v2.1.10 bash
+  sudo env TCP_BRUTAL_RELEASE_TAG=v2.1.11 bash
 ```
 
 > **First-install trust boundary:** the bootstrap itself comes from this GitHub repository. If your threat model includes a full compromise of the repository/account before first installation, independently verify the release-key fingerprint below before granting root privileges. Existing installations pin the key locally, so normal updates do not re-bootstrap trust from GitHub.

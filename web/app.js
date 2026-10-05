@@ -1,4 +1,4 @@
-let csrf = sessionStorage.getItem('csrf') || '';
+let csrf = '';
 let current = null;
 let settingsDirty = false;
 let currentBudgets = [];
@@ -12,21 +12,46 @@ async function api(path, method = 'GET', body) {
   if (method !== 'GET') headers['X-CSRF-Token'] = csrf;
   const r = await fetch(path, {method, credentials:'same-origin', headers, body:body === undefined ? undefined : JSON.stringify(body)});
   if (!r.ok) {
-    if (r.status === 401) logout('会话已失效，请重新登录');
+    if (r.status === 401) {
+      if (path === '/api/v1/session') logout('会话已失效，请重新登录');
+      else if (path !== '/api/v1/login') await verifySession().catch(() => {});
+    }
     let detail;
     try { detail = (await r.json()).error; } catch {}
-    throw new Error(detail || `HTTP ${r.status}`);
+    throw Object.assign(new Error(detail || `HTTP ${r.status}`), {status:r.status});
   }
   return r;
 }
 function logout(text) {
   csrf = '';
-  sessionStorage.removeItem('csrf');
   el('app').hidden = true;
   el('login').hidden = false;
   el('clientDrawer').hidden = true;
+  el('loginForm').hidden = false;
+  el('retrySession').hidden = true;
   el('loginNotice').textContent = text;
 }
+async function verifySession() {
+  csrf = (await (await api('/api/v1/session')).json()).csrf;
+}
+async function restoreLogin() {
+  el('retrySession').hidden = true;
+  if (!csrf) { el('loginForm').hidden = true; el('loginNotice').textContent = '正在恢复登录…'; }
+  try {
+    await verifySession();
+    el('login').hidden = true; el('app').hidden = false;
+    await refresh();
+  } catch (e) {
+    if (e.status === 401 && !csrf) return;
+    if (csrf) message(`加载失败：${e.message}，请点击“刷新数据”重试`, true);
+    else { el('loginNotice').textContent = `恢复登录失败：${e.message}`; el('retrySession').hidden = false; }
+  }
+}
+el('retrySession').onclick = restoreLogin;
+el('logout').onclick = () => busy(el('logout'), async () => {
+  await api('/api/v1/logout', 'POST', {});
+  logout('已退出登录');
+});
 async function busy(button, work) {
   button.disabled = true;
   try { await work(); } catch (e) { message(e.message, true); }
@@ -67,6 +92,7 @@ el('closePort').onclick = () => el('portDialog').close();
 el('closeDrawer').onclick = () => { el('clientDrawer').hidden = true; };
 document.onkeydown = e => { if (e.key === 'Escape') el('clientDrawer').hidden = true; };
 
+function endpoint(ip, port) { return `${ip.includes(':') ? `[${ip}]` : ip}:${port}`; }
 async function showClients(port) {
   el('clientDrawer').hidden = false;
   el('drawerTitle').textContent = `端口 ${port} · 当前连接`;
@@ -78,8 +104,8 @@ async function showClients(port) {
     el('clientNotice').textContent = data.connections.length ? `当前 ${data.connections.length} 条连接` : '当前没有连接';
     for (const c of data.connections) {
       const card = document.createElement('div'); card.className = 'connection';
-      const ip = document.createElement('strong'); ip.textContent = `${c.client_ip}:${c.client_port}`;
-      const detail = document.createElement('small'); detail.textContent = `${c.state} · 本地 ${c.local_ip}:${port}`;
+      const ip = document.createElement('strong'); ip.textContent = endpoint(c.client_ip, c.client_port);
+      const detail = document.createElement('small'); detail.textContent = `${c.state} · 本地 ${endpoint(c.local_ip, port)}`;
       const tag = document.createElement('div'); tag.className = c.managed ? 'tag' : 'tag off';
       tag.textContent = c.managed ? 'Brutal 已接管' : `未接管 · ${c.algorithm}`;
       card.append(ip,detail,tag); el('clients').append(card);
@@ -217,7 +243,7 @@ async function changeAutostart(state, button) {
 }
 el('autostartOn').onclick=()=>changeAutostart('on',el('autostartOn'));
 el('autostartOff').onclick=()=>changeAutostart('off',el('autostartOff'));
-el('loginForm').onsubmit=async e=>{e.preventDefault(); const b=e.submitter; b.disabled=true; el('loginNotice').textContent='正在登录…'; try { const r=await api('/api/v1/login','POST',{password:el('password').value}); csrf=(await r.json()).csrf; sessionStorage.setItem('csrf',csrf); el('password').value=''; el('loginNotice').textContent=''; await refresh(); message('已登录'); } catch(x) { el('loginNotice').textContent=x.message; } finally { b.disabled=false; }};
+el('loginForm').onsubmit=async e=>{e.preventDefault(); const b=e.submitter; b.disabled=true; el('loginNotice').textContent='正在登录…'; try { const r=await api('/api/v1/login','POST',{password:el('password').value,remember_me:el('rememberMe').checked}); csrf=(await r.json()).csrf; el('password').value=''; el('loginNotice').textContent=''; el('login').hidden=true; el('app').hidden=false; await refresh(); message('已登录'); } catch(x) { if (csrf) message(`加载失败：${x.message}，请点击“刷新数据”重试`,true); else el('loginNotice').textContent=x.message; } finally { b.disabled=false; }};
 el('portForm').onsubmit=async e=>{e.preventDefault(); await busy(e.submitter,async()=>{await api('/api/v1/ports','POST',{port:Number(el('port').value),rate_mbps:Number(el('rate').value),gain:Number(el('gain').value),enabled:el('enabled').checked,compensation_cap_percent:Number(el('compensationCap').value),budget:el('portBudget').value}); el('portDialog').close(); message('规则已保存'); await refresh();});};
 el('settingsForm').oninput=()=>{settingsDirty=true;};
 el('settingsForm').onsubmit=async e=>{e.preventDefault(); await busy(e.submitter,async()=>{await api('/api/v1/settings','PUT',{host:el('host').value,port:Number(el('webPort').value),allowed_ips:el('allowIPs').value.split(',').map(x=>x.trim()).filter(Boolean)}); settingsDirty=false; message('设置已保存；请重启 Web 服务生效');});};
@@ -254,4 +280,4 @@ el('budgetForm').onsubmit=async e=>{e.preventDefault();await busy(e.submitter,as
   await api('/api/v1/budgets','PUT',[...currentBudgets.filter(x=>x.name!==b.name),b]); await refresh(); message('预算已保存，仅告警，不改变出口限速');
 });};
 el('runDiagnose').onclick=()=>busy(el('runDiagnose'),async()=>{const d=await(await api('/api/v1/diagnose')).json();el('diagnoseOutput').textContent=JSON.stringify(d,null,2);});
-if (csrf) refresh().catch(()=>logout('会话已失效，请重新登录'));
+restoreLogin();

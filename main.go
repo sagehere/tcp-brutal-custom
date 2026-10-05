@@ -35,7 +35,7 @@ var (
 	algorithmName     = "brutal"
 )
 
-var version = "2.1.10-dev"
+var version = "2.1.11"
 
 type portConfig struct {
 	Port                   uint16  `json:"port"`
