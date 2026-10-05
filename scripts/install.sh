@@ -285,7 +285,10 @@ tar xzf "$tmp/$name.dkms.tar.gz" -C "/usr/src/$name-$module_version" --strip-com
   echo 'Invalid DKMS source package layout after extraction' >&2
   exit 1
 }
-if ! dkms status -m "$name" -v "$module_version" | grep -q 'added\|built\|installed'; then
+# Read the complete status before matching: grep -q can close a multi-kernel
+# status pipe early, causing a false failure under pipefail.
+dkms_status=$(dkms status -m "$name" -v "$module_version")
+if ! grep -q 'added\|built\|installed' <<<"$dkms_status"; then
   dkms add -m "$name" -v "$module_version"
 fi
 dkms build -m "$name" -v "$module_version" -k "$(uname -r)"

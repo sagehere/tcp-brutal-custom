@@ -72,3 +72,6 @@ jobs:
 
       - name: Check shell syntax
         run: bash -n scripts/*.sh
+
+      - name: Check DKMS registration retries
+        run: bash tools/install-dkms-test.sh

@@ -42,6 +42,7 @@ jobs:
           node tools/web-session-test.cjs
           python3 scripts/review-summarize.py --self-test
           bash -n scripts/*.sh
+          bash tools/install-dkms-test.sh
 
       - name: Build unsigned release bundle
         shell: bash
